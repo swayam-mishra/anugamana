@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 import chromadb
@@ -11,6 +12,14 @@ COLLECTION_NAME = "gita_verses"
 
 # ---------------- INITIALIZATION ---------------- #
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all apps to connect (simplest for dev)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 print("Loading model... (this might take a second)")
 model = SentenceTransformer(MODEL_NAME)
