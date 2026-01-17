@@ -22,16 +22,15 @@ Unlike traditional keyword searches, Anugamana uses **Semantic Search** and **Ve
 ## Installation & Setup
 
 ### 1. Clone the Repository
-```bash
-git clone [https://github.com/YOUR_USERNAME/anugamana.git](https://github.com/YOUR_USERNAME/anugamana.git)
-cd anugamana
-### 2. Backend Setup
 
+```bash
+git clone https://github.com/YOUR_USERNAME/anugamana.git
+cd anugamana
+```
+### 2. Backend Setup
 Create a virtual environment and install dependencies:
 
-Bash
-
-```
+```bash
 # Windows
 python -m venv .venv
 .venv\Scripts\activate
@@ -43,30 +42,20 @@ source .venv/bin/activate
 # Install libraries
 pip install -r requirements.txt
 ```
-
 ### 3. Build the Database
-
 The semantic search relies on a vector index. You must generate this locally first.
-
-Bash
-
-```
+```bash
 # 1. (Optional) Scrape data if gita_full.json is missing
 python scraper.py
 
 # 2. Generate Embeddings and Index
 python indexer.py
 ```
-
 _Note: This creates a `chroma_gita/` folder locally._
 
 ### 4. Run the API
-
 Start the local server:
-
-Bash
-
-```
+```bash
 uvicorn main:app --reload
 ```
 
@@ -79,17 +68,13 @@ Documentation is available at http://127.0.0.1:8000/docs.
 **Endpoint:** `POST /search`
 
 **Request:**
-
-JSON
-
-```
+```json
 {
   "query": "I am confused about my duty",
   "limit": 3
 }
 ```
-
-Response:
+**Response:**
 
 Returns a JSON list of the 3 most relevant verses, including translation, purport, and a relevance score.
 
