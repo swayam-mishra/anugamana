@@ -1,36 +1,47 @@
 # Anugamana (The Path)
 
-**Anugamana** is an AI-powered spiritual companion designed to bridge the gap between modern emotional dilemmas and ancient wisdom. 
+**Anugamana** is an AI-powered spiritual companion designed to bridge the gap between modern emotional dilemmas and ancient wisdom.
 
-Unlike traditional keyword searches, Anugamana uses **Semantic Search** and **Vector Embeddings**. This allows users to input their state of mind in natural language (e.g., *"I feel overwhelmed by pressure"*), and the system retrieves the most relevant verses from the **Bhagavad Gita**.
+Unlike traditional keyword searches, Anugamana uses **Semantic Search** and **Vector Embeddings**. This allows users to input their state of mind in natural language (e.g., *"I feel overwhelmed by pressure"*), and the system retrieves the most relevant verses from the **Bhagavad Gita** through a beautiful, purpose-built web interface.
 
 ## Features
 
 - **Semantic Search:** Understands the *meaning* behind queries, not just keywords.
+- **Interactive Web UI:** A clean, spiritual interface designed for reflection and clarity.
 - **Vector Database:** Uses ChromaDB to store and retrieve high-dimensional text embeddings.
-- **FastAPI Backend:** A lightweight, high-performance API serving the data.
-- **Data Source:** Scraped from Vedabase (Chapters 1-18).
+- **FastAPI Backend:** A lightweight, high-performance API serving the wisdom.
+- **Data Source:** Curated wisdom from the Bhagavad Gita (Chapters 1-18).
 
 ## Tech Stack
 
+### Backend 
 - **Language:** Python 3.11+
 - **Framework:** FastAPI
 - **AI/NLP:** Sentence-Transformers (`all-MiniLM-L6-v2`)
 - **Database:** ChromaDB
-- **Frontend:** React + Tailwind CSS (In Progress)
+
+### Frontend
+- **Framework:** React (Vite)
+- **Styling:** Tailwind CSS (Custom Spiritual Theme)
+- **Networking:** Axios
+- **Animation:** Framer Motion
 
 ## Installation & Setup
 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/anugamana.git
+git clone [https://github.com/YOUR_USERNAME/anugamana.git](https://github.com/YOUR_USERNAME/anugamana.git)
 cd anugamana
-```
-### 2. Backend Setup
-Create a virtual environment and install dependencies:
+````
+### 2. Backend Setup (The Brain)
 
-```bash
+Open a terminal and navigate to the backend folder:
+
+``` Bash
+cd backend
+
+# Create virtual environment
 # Windows
 python -m venv .venv
 .venv\Scripts\activate
@@ -39,44 +50,52 @@ python -m venv .venv
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install libraries
+# Install dependencies
 pip install -r requirements.txt
 ```
-### 3. Build the Database
-The semantic search relies on a vector index. You must generate this locally first.
-```bash
+
+Initialize the Brain:
+You must generate the vector index locally before the app can work.
+``` Bash
 # 1. (Optional) Scrape data if gita_full.json is missing
 python scraper.py
 
-# 2. Generate Embeddings and Index
+# 2. Generate Embeddings and Index (Creates /chroma_gita folder)
 python indexer.py
 ```
-_Note: This creates a `chroma_gita/` folder locally._
-
-### 4. Run the API
-Start the local server:
-```bash
+**Start the API Server:**
+``` Bash
 uvicorn main:app --reload
 ```
 
-The API will be available at http://127.0.0.1:8000.
+_The Backend is now running at_
 
-Documentation is available at http://127.0.0.1:8000/docs.
+---
+### 3. Frontend Setup (
 
-## Usage Example
+Open a **new** terminal window (keep the backend running) and navigate to the frontend folder:
 
-**Endpoint:** `POST /search`
+``` Bash
+cd frontend
 
-**Request:**
-```json
-{
-  "query": "I am confused about my duty",
-  "limit": 3
-}
+# Install dependencies
+npm install
+
+# Start the development server
+npm run dev
 ```
-**Response:**
 
-Returns a JSON list of the 3 most relevant verses, including translation, purport, and a relevance score.
+_The Web Interface is now running_
+## Usage
+
+1. Ensure both the **Backend** (port 8000) and **Frontend** (port 5173) are running.
+2. Open your browser to `http://localhost:XXXX`.
+3. Type your dilemma or question into the input field (e.g., _"I am confused about my duty"_).
+4. Anugamana will analyze your intent and display the most relevant verse with its translation and purport.
+
+## API Documentation
+
+If you want to use the API directly or integrate it into other apps (like Mobile), full documentation is available at:
 
 ---
 
