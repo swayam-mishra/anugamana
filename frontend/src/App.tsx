@@ -92,7 +92,7 @@ export default function App() {
               </p>
               <button 
                 onClick={handleSearchAgain}
-                className="px-6 py-2 bg-saffron-700 text-white rounded-full hover:bg-saffron-800 transition-colors"
+                className="px-6 py-2 bg-orange-700 text-white rounded-full hover:bg-orange-800 transition-colors"
               >
                 Try Again
               </button>
