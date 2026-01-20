@@ -29,34 +29,40 @@ export default function App() {
     setState('loading');
 
     try {
-      // Connects to the FastAPI backend running on localhost:8000
+      // Connects to the FastAPI backend
       const response = await axios.post('http://127.0.0.1:8000/search', {
         query: userInput,
-        limit: 1 // Fetch top result
+        limit: 1 
       });
 
       const data = response.data.results[0];
 
       if (data) {
-        // Map backend response (ChromaDB metadata) to frontend Verse interface
+        
+        const rawEmotions = data.metadata.emotions || ""; 
+        
+        const emotionTags = rawEmotions.split(',').map((s: string) => s.trim()).filter(Boolean);
+
+        const dynamicInterpretation = emotionTags.length > 0 
+          ? `This verse specifically addresses feelings of ${emotionTags[0]} and offers spiritual guidance on how to navigate them.`
+          : 'This verse resonates with your current state of mind. Reflect on its meaning to find clarity.';
+
         const verseData: Verse = {
           chapter: data.metadata.chapter,
           verse: data.metadata.verse,
           sanskrit: data.metadata.sanskrit,
-          // Fallbacks used because these fields might not be in your current dataset yet
-          transliteration: data.metadata.transliteration || '', 
+          transliteration: data.metadata.transliteration || '',
           synonyms: data.metadata.synonyms || '',
           translation: data.metadata.translation || data.text,
           purport: data.metadata.purport || '',
-          // These are placeholders until future AI interpretation features are added
-          interpretation: 'This verse resonates with your current state of mind. Reflect on its meaning to find clarity.',
-          keywords: [] 
+          
+          interpretation: dynamicInterpretation,
+          keywords: emotionTags 
         };
 
         setSelectedVerse(verseData);
         setState('result');
       } else {
-        // Handle case where no results are found
         console.warn("No results found.");
         setState('error');
       }
