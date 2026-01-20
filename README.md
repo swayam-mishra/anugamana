@@ -14,17 +14,19 @@ Unlike traditional keyword searches, Anugamana uses **Semantic Search** and **Ve
 
 ## Tech Stack
 
-### Backend 
+### Backend
 - **Language:** Python 3.11+
 - **Framework:** FastAPI
-- **AI/NLP:** Sentence-Transformers (`all-MiniLM-L6-v2`)
-- **Database:** ChromaDB
+- **AI/NLP:** Sentence-Transformers (`all-mpnet-base-v2`)
+- **Database:** ChromaDB (Vector Store)
+- **Scraping:** BeautifulSoup4
 
 ### Frontend
 - **Framework:** React (Vite)
-- **Styling:** Tailwind CSS (Custom Spiritual Theme)
+- **Styling:** Tailwind CSS v4
+- **Icons:** Lucide React
+- **Animations:** Motion (formerly Framer Motion)
 - **Networking:** Axios
-- **Animation:** Framer Motion
 
 ## Installation & Setup
 
@@ -34,6 +36,7 @@ Unlike traditional keyword searches, Anugamana uses **Semantic Search** and **Ve
 git clone [https://github.com/YOUR_USERNAME/anugamana.git](https://github.com/YOUR_USERNAME/anugamana.git)
 cd anugamana
 ````
+
 ### 2. Backend Setup (The Brain)
 
 Open a terminal and navigate to the backend folder:
@@ -54,24 +57,25 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Initialize the Brain:
+Initialize the Knowledge Base:
+
 You must generate the vector index locally before the app can work.
+
 ``` Bash
 # 1. (Optional) Scrape data if gita_full.json is missing
 python scraper.py
 
 # 2. Generate Embeddings and Index (Creates /chroma_gita folder)
+# Note: This uses the all-mpnet-base-v2 model and may take a moment.
 python indexer.py
 ```
+
 **Start the API Server:**
+
 ``` Bash
 uvicorn main:app --reload
 ```
-
-_The Backend is now running at_
-
----
-### 3. Frontend Setup (
+### 3. Frontend Setup (The Interface)
 
 Open a **new** terminal window (keep the backend running) and navigate to the frontend folder:
 
@@ -84,18 +88,19 @@ npm install
 # Start the development server
 npm run dev
 ```
-
-_The Web Interface is now running_
 ## Usage
 
-1. Ensure both the **Backend** (port 8000) and **Frontend** (port 5173) are running.
-2. Open your browser to `http://localhost:XXXX`.
+1. Ensure both the **Backend** and **Frontend** are running.
+2. Open your browser to the frontend URL (e.g., `http://localhost:5173`).
 3. Type your dilemma or question into the input field (e.g., _"I am confused about my duty"_).
 4. Anugamana will analyze your intent and display the most relevant verse with its translation and purport.
 
 ## API Documentation
 
-If you want to use the API directly or integrate it into other apps (like Mobile), full documentation is available at:
+The backend provides automatic interactive documentation. Once the server is running, visit:
+
+- **Swagger UI:** `backend_ip/docs`
+- **ReDoc:** `backend_ip/redoc`
 
 ---
 
