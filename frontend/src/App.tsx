@@ -30,7 +30,7 @@ export default function App() {
 
     try {
       // Connects to the FastAPI backend
-      const response = await axios.post('http://127.0.0.1:8000/search', {
+      const response = await axios.post('https://cowsyy-anugamana-backend.hf.space/search', {
         query: userInput,
         limit: 1 
       });
