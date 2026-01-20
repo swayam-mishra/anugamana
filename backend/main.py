@@ -7,7 +7,7 @@ import chromadb
 # ---------------- CONFIG ---------------- #
 # Must match what you used in indexer.py
 CHROMA_DIR = "chroma_gita"
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
 COLLECTION_NAME = "gita_verses"
 
 # ---------------- INITIALIZATION ---------------- #

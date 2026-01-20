@@ -6,8 +6,9 @@ from chromadb.config import Settings
 # ---------------- CONFIG ---------------- #
 
 DATA_FILE = "gita_full.json"
+EMOTION_FILE = "verse_emotions.json"
 CHROMA_DIR = "chroma_gita"
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
 COLLECTION_NAME = "gita_verses"
 
 # ---------------- LOAD DATA ---------------- #
@@ -21,9 +22,18 @@ except FileNotFoundError:
     print(f"Error: Could not find {DATA_FILE}. Make sure it is in the same folder.")
     exit()
 
+print(f"Loading {EMOTION_FILE}...")
+try:
+    with open(EMOTION_FILE, encoding="utf-8") as f:
+        emotion_map = json.load(f)
+    print(f"Loaded emotions for {len(emotion_map)} verses")
+except FileNotFoundError:
+    print(f"Warning: {EMOTION_FILE} not found. Indexing without emotion tags.")
+    emotion_map = {}
+
 # ---------------- MODEL ---------------- #
 
-print("Loading AI Model...")
+print(f"Loading AI Model ({MODEL_NAME})...")
 model = SentenceTransformer(MODEL_NAME)
 
 # ---------------- CHROMA SETUP ---------------- #
@@ -31,13 +41,14 @@ model = SentenceTransformer(MODEL_NAME)
 print("Initializing Database...")
 client = chromadb.PersistentClient(path=CHROMA_DIR)
 
-# Delete the old collection to ensure we don't have mixed data
+# Delete old collection if it exists
 try:
     client.delete_collection(name=COLLECTION_NAME)
     print("Deleted old collection to start fresh.")
 except:
     pass
 
+# Create the collection
 collection = client.create_collection(name=COLLECTION_NAME)
 
 # ---------------- INDEXING ---------------- #
@@ -46,31 +57,41 @@ documents = []
 metadatas = []
 ids = []
 
-print("Processing verses...")
+print("Preparing verses...")
 
 for v in verses:
-    # We search against both Translation AND Purport for better accuracy
-    text = f"{v.get('translation', '')}\n\n{v.get('purport', '')}".strip()
+    verse_id = v.get("verse_id", str(v.get("chapter")) + "-" + str(v.get("verse")))
+    
+    # Get emotion tag
+    emotions = emotion_map.get(verse_id, "")
+
+    # Inject emotions into text
+    text = (
+        f"Context: {emotions}\n"
+        f"Translation: {v.get('translation', '')}\n"
+        f"Purport: {v.get('purport', '')}"
+    ).strip()
     
     documents.append(text)
     
-    # THIS IS THE FIX: We now store ALL the data you want to display
+    # Store metadata
     metadatas.append({
-        "verse_id": v.get("verse_id", str(v.get("chapter")) + "-" + str(v.get("verse"))),
+        "verse_id": verse_id,
+        "emotions": emotions,
         "chapter": v.get("chapter"),
         "verse": v.get("verse"),
         "sanskrit": v.get("sanskrit", ""),
         "transliteration": v.get("transliteration", ""),
         "synonyms": v.get("synonyms", ""),
         "translation": v.get("translation", ""),
-        "purport": v.get("purport", "")[:2000] # Limit purport size to prevent DB errors on huge texts
+        "purport": v.get("purport", "")[:2000]
     })
     
-    ids.append(v.get("verse_id", f"{v['chapter']}_{v['verse']}"))
+    ids.append(verse_id)
 
-print("Generating embeddings & storing in Chroma (this may take a moment)...")
+print(f"Generating embeddings and indexing {len(documents)} verses...")
 
-# Add in batches to be safe
+# Add in batches
 batch_size = 50
 total_batches = (len(documents) + batch_size - 1) // batch_size
 
@@ -78,11 +99,21 @@ for i in range(total_batches):
     start = i * batch_size
     end = min((i + 1) * batch_size, len(documents))
     
+    batch_docs = documents[start:end]
+    batch_ids = ids[start:end]
+    batch_meta = metadatas[start:end]
+    
+    # --- THE FIX IS HERE ---
+    # We explicitly generate embeddings using OUR model (768 dims)
+    # instead of letting Chroma use its default model (384 dims).
+    batch_embeddings = model.encode(batch_docs).tolist()
+    
     collection.add(
-        documents=documents[start:end],
-        metadatas=metadatas[start:end],
-        ids=ids[start:end]
+        documents=batch_docs,
+        embeddings=batch_embeddings, # <--- CRITICAL LINE
+        metadatas=batch_meta,
+        ids=batch_ids
     )
     print(f"Indexed batch {i+1}/{total_batches}")
 
-print("Success! Database updated with full metadata.")
+print("Success! Database updated correctly with 768-dimension embeddings.")
