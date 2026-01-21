@@ -104,4 +104,4 @@ The backend provides automatic interactive documentation. Once the server is run
 
 ---
 
-_Project created as part of the Anugamana initiative._
+_Project created as part of the Almost Perfect initiative._
