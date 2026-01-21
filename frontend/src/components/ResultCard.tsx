@@ -27,10 +27,12 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
   const [liked, setLiked] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState(false);
 
+  // Helper to safely check if string has content
+  const hasContent = (str: string | undefined) => str && str.trim().length > 0;
+
   const handleCopy = () => {
     const textToCopy = `Bhagavad Gita ${verse.chapter}.${verse.verse}\n\n${verse.sanskrit}\n\n${verse.translation}`;
     
-    // Fallback method for browsers that block Clipboard API
     const textArea = document.createElement('textarea');
     textArea.value = textToCopy;
     textArea.style.position = 'fixed';
@@ -54,7 +56,6 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
   const handleLike = () => {
     setLiked(true);
     setFeedbackExpanded(false);
-    // Here you would send feedback to your backend
     console.log('User liked the verse');
   };
 
@@ -65,7 +66,6 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
 
   const handleSendFeedback = () => {
     if (!feedbackText.trim()) return;
-    // Here you would send feedback to your backend
     console.log('Feedback:', feedbackText);
     setFeedbackSent(true);
     setTimeout(() => {
@@ -75,7 +75,6 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
     }, 2000);
   };
 
-  // Function to highlight matching keywords in translation
   const highlightKeywords = (text: string) => {
     const inputLower = userInput.toLowerCase();
     const words = text.split(' ');
@@ -105,7 +104,7 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
       transition={{ duration: 0.5 }}
       className="min-h-[calc(100vh-80px)] flex flex-col"
     >
-      {/* Header Section - Fixed */}
+      {/* Header Section */}
       <div className="bg-gradient-to-r from-orange-100 to-amber-100 px-6 py-4 border-b border-orange-200">
         <div className="container mx-auto max-w-7xl flex items-center justify-between">
           <div>
@@ -184,7 +183,6 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
                   </button>
                 </div>
 
-                {/* Minimal Feedback Section */}
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handleLike}
@@ -193,21 +191,19 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
                         ? 'bg-orange-100 border-orange-400 text-orange-700'
                         : 'bg-white border-gray-300 text-gray-500 hover:border-orange-300 hover:text-orange-600'
                     }`}
-                    aria-label="Like this verse"
                   >
                     <Heart className="w-4 h-4" fill={liked ? 'currentColor' : 'none'} />
                   </button>
                   <button
                     onClick={handleDislike}
                     className="p-2 rounded-full border bg-white border-gray-300 text-gray-500 hover:border-orange-300 hover:text-orange-600 transition-all"
-                    aria-label="Request different verse"
                   >
                     <RefreshCw className="w-4 h-4" />
                   </button>
                 </div>
               </div>
 
-              {/* Expanded Feedback Input */}
+              {/* Feedback Input */}
               {feedbackExpanded && (
                 <motion.div
                   initial={{ opacity: 0, height: 0 }}
@@ -241,14 +237,14 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
 
           {/* Right Column - Synonyms & Purport */}
           <div className="space-y-6">
-            {/* Why This Verse? - Smart Insight Card */}
+            
+            {/* Why This Verse? - Always show */}
             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3, duration: 0.5 }}
               className="bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 rounded-2xl shadow-xl border-2 border-indigo-200 p-6 relative overflow-hidden"
             >
-              {/* Decorative gradient overlay */}
               <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-indigo-200/30 to-purple-200/30 rounded-full blur-2xl -mr-16 -mt-16" />
               
               <div className="relative">
@@ -262,7 +258,6 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
                   {verse.interpretation}
                 </p>
                 
-                {/* Matched keywords indicator */}
                 <div className="mt-4 pt-4 border-t border-indigo-200">
                   <p className="text-xs font-medium text-indigo-700 mb-2">Matched themes:</p>
                   <div className="flex flex-wrap gap-2">
@@ -279,28 +274,33 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
               </div>
             </motion.div>
 
-            {/* Synonyms */}
-            <div className="bg-white rounded-2xl shadow-xl border border-orange-100 p-6">
-              <p className="text-sm font-medium text-orange-700 mb-3">
-                Synonyms
-              </p>
-              <p className="text-sm leading-relaxed text-gray-700">
-                {verse.synonyms}
-              </p>
-            </div>
-
-            {/* Purport */}
-            <div className="bg-white rounded-2xl shadow-xl border border-orange-100 p-6 flex-1">
-              <p className="text-sm font-medium text-orange-700 mb-3 flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-orange-600" />
-                Purport
-              </p>
-              <div className="prose prose-sm max-w-none">
-                <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">
-                  {verse.purport}
+            {/* Synonyms - Hide if empty */}
+            {hasContent(verse.synonyms) && (
+              <div className="bg-white rounded-2xl shadow-xl border border-orange-100 p-6">
+                <p className="text-sm font-medium text-orange-700 mb-3">
+                  Synonyms
+                </p>
+                <p className="text-sm leading-relaxed text-gray-700">
+                  {verse.synonyms}
                 </p>
               </div>
-            </div>
+            )}
+
+            {/* Purport - Hide if empty */}
+            {hasContent(verse.purport) && (
+              <div className="bg-white rounded-2xl shadow-xl border border-orange-100 p-6 flex-1">
+                <p className="text-sm font-medium text-orange-700 mb-3 flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-orange-600" />
+                  Purport
+                </p>
+                <div className="prose prose-sm max-w-none">
+                  <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">
+                    {verse.purport}
+                  </p>
+                </div>
+              </div>
+            )}
+
           </div>
         </div>
       </div>
