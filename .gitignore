@@ -1,4 +1,5 @@
-
+backend/*.pkl
+*.pkl
 backend/venv/
 backend/__pycache__/
 backend/*.pyc
