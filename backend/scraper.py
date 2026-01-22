@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 import json
 import time
 import re
+import copy  # Moved to top level
 
 # ---------------- CONFIG ---------------- #
 
@@ -30,18 +31,42 @@ def clean_label(text, label):
     """
     if not text:
         return ""
-    # Regex: Start of string + optional space + label + optional colon + whitespace
-    # e.g. matches "Translation", "Translation:", "Translation "
     pattern = rf"^\s*{label}[:\s]*"
     return re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+def safe_text(soup, selector):
+    """
+    Extracts text while preserving paragraph structure but NOT breaking 
+    sentences on inline tags like <a>, <em>, or <strong>.
+    """
+    container = soup.select_one(selector)
+    if not container:
+        return ""
+
+    # Strategy 1: If the container has specific paragraph tags, prioritize them.
+    # This prevents "Intro text" garbage and ensures clean separation.
+    paragraphs = container.find_all("p")
+    if paragraphs:
+        # Join paragraphs with double newline
+        # Join INSIDE paragraphs with space (fixes "The\n\nBhagavad" issue)
+        return "\n\n".join(p.get_text(" ", strip=True) for p in paragraphs)
+
+    # Strategy 2: If no <p> tags, treat as a single block (e.g., Translation).
+    # Use a copy to avoid modifying the original soup during iteration
+    temp_container = copy.copy(container)
+
+    # Manually handle <br> to preserve line breaks in poems/verses
+    for br in temp_container.find_all("br"):
+        br.replace_with("\n")
+
+    # Use space separator for inline tags to keep sentences flowing
+    return temp_container.get_text(" ", strip=True)
 
 def extract_sanskrit(soup):
     container = soup.select_one("div.av-verse_text")
     if not container:
         return ""
 
-    # Create a copy to avoid modifying the original soup validation
-    import copy
     container = copy.copy(container)
 
     for br in container.find_all("br"):
@@ -59,14 +84,6 @@ def extract_sanskrit(soup):
         lines.append(line)
 
     return "\n".join(lines)
-
-
-def safe_text(soup, selector):
-    tag = soup.select_one(selector)
-    if tag:
-        # Use \n\n for paragraph breaks to maintain readability
-        return tag.get_text("\n\n", strip=True)
-    return ""
 
 def extract_purport_robust(soup):
     """
@@ -89,9 +106,14 @@ def extract_purport_robust(soup):
         if marker:
             parent = marker.find_parent("div")
             if parent:
-                text = parent.get_text("\n\n", strip=True)
+                # Use the new safe_text logic explicitly on this parent
+                # We can't call safe_text with selector here, so we mimic logic:
+                paragraphs = parent.find_all("p")
+                if paragraphs:
+                    text = "\n\n".join(p.get_text(" ", strip=True) for p in paragraphs)
+                else:
+                    text = parent.get_text(" ", strip=True)
 
-    # Always clean the "Purport" label if found
     return clean_label(text, "Purport")
 
 def parse_verse_id(title_text):
