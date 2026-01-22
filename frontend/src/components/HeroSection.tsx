@@ -9,6 +9,9 @@ interface HeroSectionProps {
   userInput: string;
   onInputChange: (value: string) => void;
   onSeekGuidance: () => void;
+  // New props for filtering
+  selectedChapter: number | null;
+  onChapterChange: (chapter: number | null) => void;
 }
 
 const EXAMPLE_PROMPTS = [
@@ -17,11 +20,6 @@ const EXAMPLE_PROMPTS = [
   "I'm struggling to let go of past mistakes...",
   "I want to find inner peace and calm my anxious mind...",
   "I'm unsure which path to take in my career...",
-  "I'm seeking courage to face my fears...",
-  "I want to understand how to deal with change...",
-  "I'm looking for guidance on spiritual growth...",
-  "I want to learn how to focus better and avoid distractions...",
-  "I'm trying to overcome comparison with others...",
 ];
 
 export function HeroSection({
@@ -29,13 +27,15 @@ export function HeroSection({
   userInput,
   onInputChange,
   onSeekGuidance,
+  selectedChapter,
+  onChapterChange,
 }: HeroSectionProps) {
   const [placeholderIndex, setPlaceholderIndex] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
       setPlaceholderIndex((prev) => (prev + 1) % EXAMPLE_PROMPTS.length);
-    }, 3000); // Change every 3 seconds
+    }, 3000);
 
     return () => clearInterval(interval);
   }, []);
@@ -67,6 +67,27 @@ export function HeroSection({
       </motion.div>
 
       <div className="space-y-4">
+        {/* Chapter Filter Dropdown */}
+        <div className="flex justify-end">
+          <select
+            value={selectedChapter || ""}
+            onChange={(e) => {
+              const val = e.target.value;
+              onChapterChange(val ? parseInt(val) : null);
+            }}
+            disabled={state === 'loading'}
+            className="px-4 py-2 rounded-lg bg-white/50 border border-orange-200 text-orange-900 text-sm focus:outline-none focus:border-orange-400 cursor-pointer hover:bg-white/80 transition-colors"
+          >
+            <option value="">All Chapters (Entire Gita)</option>
+            {Array.from({ length: 18 }, (_, i) => i + 1).map((num) => (
+              <option key={num} value={num}>
+                Chapter {num}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Input Area */}
         <div className="relative">
           <textarea
             value={userInput}
@@ -100,7 +121,9 @@ export function HeroSection({
             animate={{ opacity: 1 }}
             className="text-sm text-orange-700 italic"
           >
-            Scanning the wisdom of 700 verses...
+            {selectedChapter 
+              ? `Scanning Chapter ${selectedChapter}...` 
+              : "Scanning the wisdom of 700 verses..."}
           </motion.p>
         )}
       </div>

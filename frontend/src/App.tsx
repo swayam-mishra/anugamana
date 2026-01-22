@@ -21,6 +21,8 @@ interface Verse {
 export default function App() {
   const [state, setState] = useState<AppState>('idle');
   const [userInput, setUserInput] = useState('');
+  // 1. New state for Chapter Filtering
+  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
   const [selectedVerse, setSelectedVerse] = useState<Verse | null>(null);
 
   const handleSeekGuidance = async () => {
@@ -32,7 +34,9 @@ export default function App() {
       // Connects to the FastAPI backend
       const response = await axios.post('https://cowsyy-anugamana-backend.hf.space/search', {
         query: userInput,
-        limit: 1 
+        limit: 1,
+        // 2. Send the selected chapter (if any) to the backend
+        chapter: selectedChapter
       });
 
       const data = response.data.results[0];
@@ -40,12 +44,18 @@ export default function App() {
       if (data) {
         
         const rawEmotions = data.metadata.emotions || ""; 
-        
         const emotionTags = rawEmotions.split(',').map((s: string) => s.trim()).filter(Boolean);
 
-        const dynamicInterpretation = emotionTags.length > 0 
-          ? `This verse specifically addresses feelings of ${emotionTags[0]} and offers spiritual guidance on how to navigate them.`
-          : 'This verse resonates with your current state of mind. Reflect on its meaning to find clarity.';
+        // 3. AI ADVICE LOGIC: 
+        // Check if the backend provided 'ai_advice' (Gemini RAG). 
+        // If yes, use it. If no, fall back to the template.
+        const aiAdvice = data.metadata.ai_advice;
+        
+        const finalInterpretation = aiAdvice 
+          ? aiAdvice 
+          : (emotionTags.length > 0 
+              ? `This verse specifically addresses feelings of ${emotionTags[0]} and offers spiritual guidance on how to navigate them.`
+              : 'This verse resonates with your current state of mind. Reflect on its meaning to find clarity.');
 
         const verseData: Verse = {
           chapter: data.metadata.chapter,
@@ -56,7 +66,7 @@ export default function App() {
           translation: data.metadata.translation || data.text,
           purport: data.metadata.purport || '',
           
-          interpretation: dynamicInterpretation,
+          interpretation: finalInterpretation, // Use the smart interpretation
           keywords: emotionTags 
         };
 
@@ -77,6 +87,8 @@ export default function App() {
     setState('idle');
     setUserInput('');
     setSelectedVerse(null);
+    // Note: We deliberately do NOT reset selectedChapter here, 
+    // so the user can ask multiple questions within the same chapter context.
   };
 
   return (
@@ -107,11 +119,14 @@ export default function App() {
       ) : (
         <main className="container mx-auto px-4 flex items-center justify-center min-h-[calc(100vh-80px)]">
           <div className="w-full max-w-3xl">
+            {/* 4. Pass the new props to HeroSection */}
             <HeroSection
               state={state === 'loading' ? 'loading' : 'idle'}
               userInput={userInput}
               onInputChange={setUserInput}
               onSeekGuidance={handleSeekGuidance}
+              selectedChapter={selectedChapter}
+              onChapterChange={setSelectedChapter}
             />
           </div>
         </main>
