@@ -1,7 +1,10 @@
 import json
+import pickle
+import os
 from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.config import Settings
+from rank_bm25 import BM25Okapi
 
 # ---------------- CONFIG ---------------- #
 
@@ -10,6 +13,8 @@ EMOTION_FILE = "verse_emotions.json"
 CHROMA_DIR = "chroma_gita"
 MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
 COLLECTION_NAME = "gita_verses"
+BM25_FILE = "bm25_index.pkl"
+BM25_IDS_FILE = "bm25_ids.pkl"
 
 # ---------------- LOAD DATA ---------------- #
 
@@ -51,7 +56,7 @@ except:
 # Create the collection
 collection = client.create_collection(name=COLLECTION_NAME)
 
-# ---------------- INDEXING ---------------- #
+# ---------------- PREPARE DATA ---------------- #
 
 documents = []
 metadatas = []
@@ -66,10 +71,13 @@ for v in verses:
     emotions = emotion_map.get(verse_id, "")
 
     # Inject emotions into text
+    # We use this same text for both Vector embedding and BM25 keywords
     text = (
         f"Context: {emotions}\n"
         f"Translation: {v.get('translation', '')}\n"
-        f"Purport: {v.get('purport', '')}"
+        f"Purport: {v.get('purport', '')}\n"
+        f"Sanskrit: {v.get('sanskrit', '')}\n"
+        f"Synonyms: {v.get('synonyms', '')}"
     ).strip()
     
     documents.append(text)
@@ -89,6 +97,25 @@ for v in verses:
     
     ids.append(verse_id)
 
+# ---------------- BM25 INDEXING ---------------- #
+
+print("Building BM25 Index...")
+# Simple whitespace tokenization. 
+# For production, consider a better tokenizer (e.g., NLTK/Spacy) if needed.
+tokenized_corpus = [doc.lower().split() for doc in documents]
+bm25 = BM25Okapi(tokenized_corpus)
+
+# Save BM25 index and corresponding IDs
+with open(BM25_FILE, "wb") as f:
+    pickle.dump(bm25, f)
+    
+with open(BM25_IDS_FILE, "wb") as f:
+    pickle.dump(ids, f)
+    
+print(f"Saved BM25 index to {BM25_FILE} and IDs to {BM25_IDS_FILE}")
+
+# ---------------- VECTOR INDEXING ---------------- #
+
 print(f"Generating embeddings and indexing {len(documents)} verses...")
 
 # Add in batches
@@ -103,17 +130,14 @@ for i in range(total_batches):
     batch_ids = ids[start:end]
     batch_meta = metadatas[start:end]
     
-    # --- THE FIX IS HERE ---
-    # We explicitly generate embeddings using OUR model (768 dims)
-    # instead of letting Chroma use its default model (384 dims).
     batch_embeddings = model.encode(batch_docs).tolist()
     
     collection.add(
         documents=batch_docs,
-        embeddings=batch_embeddings, # <--- CRITICAL LINE
+        embeddings=batch_embeddings,
         metadatas=batch_meta,
         ids=batch_ids
     )
     print(f"Indexed batch {i+1}/{total_batches}")
 
-print("Success! Database updated correctly with 768-dimension embeddings.")
+print("Success! Database updated with Hybrid Search assets.")
