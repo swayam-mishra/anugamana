@@ -149,8 +149,12 @@ async def generate_advice(query: str, verse_text: str):
 
     prompt = f"""
     You are a wise spiritual guide. 
-    The user asked: "{query}"
-    The Bhagavad Gita says: "{verse_text}"
+    The user asked the question enclosed in triple backticks:
+    ```
+    {query}
+    ```
+    The Bhagavad Gita says:
+    "{verse_text}"
     
     Explain briefly how this verse answers their question and offer one actionable piece of advice.
     Keep it warm, empathetic, and under 100 words.
