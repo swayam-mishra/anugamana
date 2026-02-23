@@ -2,14 +2,18 @@ import pickle
 import json
 import os
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer, CrossEncoder 
+from pydantic import BaseModel, Field
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import chromadb
 import numpy as np
-from google import genai 
+from google import genai
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 CHROMA_DIR = "chroma_gita"
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
@@ -23,7 +27,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 try:
     if GEMINI_API_KEY:
-        # The new SDK uses a Client instance
         client = genai.Client(api_key=GEMINI_API_KEY)
         print("✅ Gemini AI Connected (New SDK)")
     else:
@@ -34,7 +37,10 @@ except Exception as e:
     client = None
 
 # ---------------- INITIALIZATION ---------------- #
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI()
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
 ALLOWED_ORIGINS = origins_env.split(",")
@@ -82,7 +88,7 @@ except Exception as e:
 
 # ---------------- DATA MODELS ---------------- #
 class SearchRequest(BaseModel):
-    query: str
+    query: str = Field(..., max_length=500)
     limit: int = 5
     chapter: Optional[int] = None
 
@@ -92,7 +98,7 @@ def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], init
     # 1. Vector Search
     query_embedding = embedder.encode(query).tolist()
     where_clause = {"chapter": chapter_filter} if chapter_filter else None
-    
+
     vector_results = collection.query(
         query_embeddings=[query_embedding],
         n_results=initial_k,
@@ -106,16 +112,16 @@ def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], init
     if bm25:
         tokenized_query = query.lower().split()
         bm25_scores = bm25.get_scores(tokenized_query)
-        top_n = initial_k * 3 
+        top_n = initial_k * 3
         top_indices = np.argsort(bm25_scores)[::-1][:top_n]
-        
+
         rank = 0
         for idx in top_indices:
             if bm25_scores[idx] <= 0: continue
             vid = bm25_ids[idx]
             if chapter_filter is not None:
                 if id_to_chapter.get(vid) != chapter_filter: continue
-            
+
             bm25_ranks[vid] = rank
             rank += 1
             if rank >= initial_k: break
@@ -123,7 +129,7 @@ def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], init
     # 3. RRF Fusion
     combined_scores = {}
     all_found_ids = set(vector_ranks.keys()) | set(bm25_ranks.keys())
-    
+
     for vid in all_found_ids:
         score = 0.0
         if vid in vector_ranks: score += 1 / (k + vector_ranks[vid] + 1)
@@ -133,13 +139,14 @@ def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], init
     sorted_ids = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
     return [vid for vid, score in sorted_ids[:initial_k]]
 
+
 async def generate_advice(query: str, verse_text: str):
     """
     Uses Gemini (New SDK) to generate personalized advice.
     """
     if not client:
         return None
-        
+
     prompt = f"""
     You are a wise spiritual guide. 
     The user asked: "{query}"
@@ -148,12 +155,11 @@ async def generate_advice(query: str, verse_text: str):
     Explain briefly how this verse answers their question and offer one actionable piece of advice.
     Keep it warm, empathetic, and under 100 words.
     """
-    
+
     try:
-        # --- NEW SDK USAGE ---
         response = await run_in_threadpool(
             client.models.generate_content,
-            model="gemini-2.5-flash", # Using your requested model
+            model="gemini-2.5-flash",
             contents=prompt
         )
         return response.text
@@ -167,23 +173,25 @@ async def generate_advice(query: str, verse_text: str):
 def home():
     return {"message": "Anugamana API: Hybrid Search + Re-Ranking + RAG"}
 
+
 @app.post("/search")
-async def search_verses(request: SearchRequest):
+@limiter.limit("15/minute")
+async def search_verses(request: Request, payload: SearchRequest):
     try:
         # 1. Hybrid Search (Offloaded to ThreadPool)
         candidate_ids = await run_in_threadpool(
-            _calculate_hybrid_candidates, 
-            request.query, 
-            request.chapter, 
+            _calculate_hybrid_candidates,
+            payload.query,
+            payload.chapter,
             20
         )
-        
+
         if not candidate_ids:
             return {"results": []}
 
         # 2. Fetch Text
         results_data = collection.get(ids=candidate_ids, include=["documents", "metadatas"])
-        
+
         fetched_map = {}
         for i, vid in enumerate(results_data['ids']):
             fetched_map[vid] = {
@@ -196,13 +204,13 @@ async def search_verses(request: SearchRequest):
         valid_ids = []
         for vid in candidate_ids:
             if vid in fetched_map:
-                pairs.append([request.query, fetched_map[vid]["text"]])
+                pairs.append([payload.query, fetched_map[vid]["text"]])
                 valid_ids.append(vid)
 
         if pairs:
             # 4. Re-ranking
             cross_scores = await run_in_threadpool(reranker.predict, pairs)
-            
+
             scored_results = []
             for i, score in enumerate(cross_scores):
                 scored_results.append({
@@ -210,17 +218,17 @@ async def search_verses(request: SearchRequest):
                     "score": float(score),
                     "data": fetched_map[valid_ids[i]]
                 })
-            
+
             scored_results.sort(key=lambda x: x["score"], reverse=True)
-            
+
             # 5. Format & RAG
             final_results = []
-            top_results = scored_results[:request.limit]
-            
+            top_results = scored_results[:payload.limit]
+
             rag_advice = None
-            if top_results and request.limit == 1:
-                 top_verse = top_results[0]
-                 rag_advice = await generate_advice(request.query, top_verse["data"]["text"])
+            if top_results and payload.limit == 1:
+                top_verse = top_results[0]
+                rag_advice = await generate_advice(payload.query, top_verse["data"]["text"])
 
             for item in top_results:
                 res = {
@@ -230,11 +238,11 @@ async def search_verses(request: SearchRequest):
                 }
                 if rag_advice and item == top_results[0]:
                     res["metadata"]["ai_advice"] = rag_advice
-                    
+
                 final_results.append(res)
 
             return {"results": final_results}
-            
+
         return {"results": []}
 
     except Exception as e:
