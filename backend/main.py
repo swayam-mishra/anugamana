@@ -1,6 +1,11 @@
+import logging
 import pickle
 import json
 import os
+
+# ---------------- LOGGING ---------------- #
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -147,6 +152,7 @@ async def generate_advice(query: str, verse_text: str):
     if not client:
         return None
 
+    # Security Fix: Use explicit delimiters (triple backticks) to isolate user input
     prompt = f"""
     You are a wise spiritual guide. 
     The user asked the question enclosed in triple backticks:
@@ -250,5 +256,9 @@ async def search_verses(request: Request, payload: SearchRequest):
         return {"results": []}
 
     except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Internal Search Error: {e}", exc_info=True)
+
+        raise HTTPException(
+            status_code=500,
+            detail="An internal error occurred while processing the search."
+        )
