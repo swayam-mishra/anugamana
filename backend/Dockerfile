@@ -19,10 +19,16 @@ RUN useradd -m -u 1000 user
 RUN mkdir -p chroma_gita
 RUN python indexer.py
 
-# --- THE FIX ---
+# --- THE FIX FOR PERMISSIONS ---
 # Give the 'user' full ownership of the database folder and ALL its contents
 RUN chown -R user:user chroma_gita
-# ----------------
+
+# --- THE OPTIMIZATION: PRE-DOWNLOAD MODELS ---
+# This ensures models are baked into the image, preventing slow cold-starts
+RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
+    SentenceTransformer('sentence-transformers/all-mpnet-base-v2'); \
+    CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+# ----------------------------------------------
 
 # Switch to the non-root user
 USER user
