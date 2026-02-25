@@ -212,8 +212,11 @@ async def search_verses(request: Request, payload: SearchRequest):
         if not candidate_ids:
             return {"results": []}
 
-        # 2. Fetch Text
-        results_data = collection.get(ids=candidate_ids, include=["documents", "metadatas"])
+        results_data = await run_in_threadpool(
+            collection.get,
+            ids=candidate_ids, 
+            include=["documents", "metadatas"]
+        )
         
         fetched_map = {}
         for i, vid in enumerate(results_data['ids']):
