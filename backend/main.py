@@ -106,10 +106,10 @@ except Exception as e:
 
 # ---------------- DATA MODELS ---------------- #
 class SearchRequest(BaseModel):
-    # Security: Input Validation (Max length)
+    # Security: Input Validation (Max length and Range Bounds)
     query: str = Field(..., max_length=500)
-    limit: int = 5
-    chapter: Optional[int] = None
+    limit: int = Field(default=5, ge=1, le=20) # Max 20 results to prevent OOM
+    chapter: Optional[int] = Field(default=None, ge=1, le=18) # Only 18 chapters exist
 
 # ---------------- HELPER FUNCTIONS ---------------- #
 
@@ -212,6 +212,7 @@ async def search_verses(request: Request, payload: SearchRequest):
         if not candidate_ids:
             return {"results": []}
 
+        # 2. Fetch Text (Optimized: Non-blocking DB call)
         results_data = await run_in_threadpool(
             collection.get,
             ids=candidate_ids, 
