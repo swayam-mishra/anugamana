@@ -9,13 +9,16 @@ from rank_bm25 import BM25Okapi
 
 # ---------------- CONFIG ---------------- #
 
+# Allow overriding the storage location via Environment Variable
+BASE_DIR = os.getenv("DB_PATH", ".")
+
 DATA_FILE = "gita_full.json"
 EMOTION_FILE = "verse_emotions.json"
-CHROMA_DIR = "chroma_gita"
+CHROMA_DIR = os.path.join(BASE_DIR, "chroma_gita")  # Dynamic Path
 MODEL_NAME = "sentence-transformers/all-mpnet-base-v2"
 COLLECTION_NAME = "gita_verses"
-BM25_FILE = "bm25_index.pkl"
-BM25_IDS_FILE = "bm25_ids.pkl"
+BM25_FILE = os.path.join(BASE_DIR, "bm25_index.pkl")  # Dynamic Path
+BM25_IDS_FILE = os.path.join(BASE_DIR, "bm25_ids.pkl")  # Dynamic Path
 
 # ---------------- LOAD DATA ---------------- #
 

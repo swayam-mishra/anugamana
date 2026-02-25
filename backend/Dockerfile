@@ -22,6 +22,7 @@ RUN python indexer.py
 # --- THE FIX FOR PERMISSIONS ---
 # Give the 'user' full ownership of the database folder and ALL its contents
 RUN chown -R user:user chroma_gita
+RUN chown user:user *.pkl
 
 # --- THE OPTIMIZATION: PRE-DOWNLOAD MODELS ---
 # This ensures models are baked into the image, preventing slow cold-starts
@@ -34,6 +35,10 @@ RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncod
 USER user
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH
+
+# Default DB_PATH is current dir.
+# To enable persistence on HF, set DB_PATH to /data in Space Settings.
+ENV DB_PATH="."
 
 # Expose port 7860
 EXPOSE 7860

@@ -1,6 +1,7 @@
 import pickle
 import json
 import os
+import shutil
 import logging
 import re
 from typing import Optional, Any
@@ -25,12 +26,15 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 # ---------------- CONFIGURATION ---------------- #
-CHROMA_DIR = "chroma_gita"
+# Configurable Base Directory via Environment Variable
+BASE_DIR = os.getenv("DB_PATH", ".")
+
+CHROMA_DIR = os.path.join(BASE_DIR, "chroma_gita")  # Dynamic Path
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 COLLECTION_NAME = "gita_verses"
-BM25_FILE = "bm25_index.pkl"
-BM25_IDS_FILE = "bm25_ids.pkl"
+BM25_FILE = os.path.join(BASE_DIR, "bm25_index.pkl")  # Dynamic Path
+BM25_IDS_FILE = os.path.join(BASE_DIR, "bm25_ids.pkl")  # Dynamic Path
 DATA_FILE = "gita_full.json"
 
 # Security: Secure Logger Setup
@@ -70,6 +74,25 @@ async def lifespan(app: FastAPI):
     global embedder, reranker, chroma_client, collection, bm25, bm25_ids, id_to_chapter
 
     print("🔄 Starting Anugamana Backend...")
+
+    # --- PERSISTENCE CHECK ---
+    # If we are using a custom DB_PATH (like /data) and it's empty,
+    # copy the pre-baked DB from the Docker image to the new location.
+    if BASE_DIR != "." and not os.path.exists(CHROMA_DIR):
+        print(f"📦 First run on Persistent Storage. Hydrating {BASE_DIR}...")
+        try:
+            # Copy ChromaDB
+            shutil.copytree("chroma_gita", CHROMA_DIR)
+            # Copy BM25 Indices
+            if os.path.exists("bm25_index.pkl"):
+                shutil.copy("bm25_index.pkl", BM25_FILE)
+            if os.path.exists("bm25_ids.pkl"):
+                shutil.copy("bm25_ids.pkl", BM25_IDS_FILE)
+            print("✅ Database successfully migrated to Persistent Storage.")
+        except Exception as e:
+            logger.error(f"❌ Failed to migrate database: {e}")
+            # Fallback to local files if migration fails
+    # -------------------------
 
     # 1. Load Embedding Model
     try:
