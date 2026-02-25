@@ -2,6 +2,7 @@ import pickle
 import json
 import os
 import logging
+import re
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -129,7 +130,8 @@ def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], init
     # 2. BM25 Search
     bm25_ranks = {}
     if bm25:
-        tokenized_query = query.lower().split()
+        # Improved Tokenization: Strip punctuation
+        tokenized_query = re.findall(r'\b\w+\b', query.lower())
         bm25_scores = bm25.get_scores(tokenized_query)
         top_n = initial_k * 3 
         top_indices = np.argsort(bm25_scores)[::-1][:top_n]

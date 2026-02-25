@@ -1,6 +1,7 @@
 import json
 import pickle
 import os
+import re
 from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.config import Settings
@@ -100,9 +101,8 @@ for v in verses:
 # ---------------- BM25 INDEXING ---------------- #
 
 print("Building BM25 Index...")
-# Simple whitespace tokenization. 
-# For production, consider a better tokenizer (e.g., NLTK/Spacy) if needed.
-tokenized_corpus = [doc.lower().split() for doc in documents]
+# Improved Tokenization: Strip punctuation and keep only alphanumeric words
+tokenized_corpus = [re.findall(r'\b\w+\b', doc.lower()) for doc in documents]
 bm25 = BM25Okapi(tokenized_corpus)
 
 # Save BM25 index and corresponding IDs
