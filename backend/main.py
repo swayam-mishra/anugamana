@@ -3,7 +3,8 @@ import json
 import os
 import logging
 import re
-from typing import Optional
+from typing import Optional, Any
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load environment variables first
@@ -33,7 +34,7 @@ BM25_IDS_FILE = "bm25_ids.pkl"
 DATA_FILE = "gita_full.json"
 
 # Security: Secure Logger Setup
-logging.basicConfig(level=logging.ERROR)
+logging.basicConfig(level=logging.INFO) # Changed to INFO to see startup logs
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -49,61 +50,102 @@ except Exception as e:
     print(f"⚠️ Client Init Error: {e}")
     client = None
 
+# ---------------- GLOBAL STATE ---------------- #
+# Initialize as None. They will be populated in lifespan.
+embedder: Optional[SentenceTransformer] = None
+reranker: Optional[CrossEncoder] = None
+chroma_client: Optional[chromadb.PersistentClient] = None
+collection: Optional[Any] = None
+bm25: Optional[Any] = None
+bm25_ids: list = []
+id_to_chapter: dict = {}
+
+# ---------------- LIFESPAN MANAGER ---------------- #
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager handles startup and shutdown events.
+    Models and DB connections are loaded here to prevent import-time blocking/crashes.
+    """
+    global embedder, reranker, chroma_client, collection, bm25, bm25_ids, id_to_chapter
+
+    print("🔄 Starting Anugamana Backend...")
+
+    # 1. Load Embedding Model
+    try:
+        print(f"   Loading Embedding Model ({EMBEDDING_MODEL})...")
+        embedder = SentenceTransformer(EMBEDDING_MODEL)
+    except Exception as e:
+        logger.error(f"❌ Failed to load Embedding Model: {e}")
+
+    # 2. Load Re-ranking Model
+    try:
+        print(f"   Loading Re-ranking Model ({RERANK_MODEL})...")
+        reranker = CrossEncoder(RERANK_MODEL)
+    except Exception as e:
+        logger.error(f"❌ Failed to load Reranker: {e}")
+
+    # 3. Connect to ChromaDB
+    try:
+        print(f"   Connecting to ChromaDB at {CHROMA_DIR}...")
+        chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+        collection = chroma_client.get_collection(name=COLLECTION_NAME)
+    except Exception as e:
+        logger.error(f"❌ Failed to connect to ChromaDB: {e}")
+
+    # 4. Load BM25 Index
+    print("   Loading BM25 Index...")
+    try:
+        with open(BM25_FILE, "rb") as f:
+            bm25 = pickle.load(f)
+        with open(BM25_IDS_FILE, "rb") as f:
+            bm25_ids = pickle.load(f)
+        print("   ✅ BM25 Loaded.")
+    except FileNotFoundError:
+        print("   ⚠️ BM25 index files not found. Keyword search disabled.")
+        bm25 = None
+        bm25_ids = []
+
+    # 5. Build Chapter Map
+    print("   Building Chapter Map...")
+    try:
+        with open(DATA_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+            for v in data:
+                vid = v.get("verse_id", str(v.get("chapter")) + "-" + str(v.get("verse")))
+                id_to_chapter[vid] = v.get("chapter")
+    except Exception as e:
+        print(f"   ⚠️ Could not load {DATA_FILE}: {e}")
+
+    print("✅ Startup Complete. Server is ready.")
+    
+    yield  # Control is yielded to the application
+    
+    # Shutdown logic (if any cleanup is needed)
+    print("🛑 Shutting down Anugamana Backend...")
+
 # ---------------- INITIALIZATION ---------------- #
 # Security: Initialize Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 
-app = FastAPI()
+# Pass lifespan to FastAPI
+app = FastAPI(lifespan=lifespan)
 
 # Security: Register Limiter
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Security: Secure CORS
-# Fetch allowed origins from env or default to localhost
 origins_env = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
 ALLOWED_ORIGINS = origins_env.split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # Explicit list, no "*"
+    allow_origins=ALLOWED_ORIGINS,  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-print("Loading Embedding Model...")
-embedder = SentenceTransformer(EMBEDDING_MODEL)
-
-print("Loading Re-ranking Model...")
-reranker = CrossEncoder(RERANK_MODEL)
-
-print("Connecting to ChromaDB...")
-chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-collection = chroma_client.get_collection(name=COLLECTION_NAME)
-
-print("Loading BM25 Index...")
-try:
-    with open(BM25_FILE, "rb") as f:
-        bm25 = pickle.load(f)
-    with open(BM25_IDS_FILE, "rb") as f:
-        bm25_ids = pickle.load(f)
-    print("BM25 Loaded Successfully.")
-except FileNotFoundError:
-    print("Error: BM25 index files not found.")
-    bm25 = None
-    bm25_ids = []
-
-print("Building Chapter Map...")
-id_to_chapter = {}
-try:
-    with open(DATA_FILE, encoding="utf-8") as f:
-        data = json.load(f)
-        for v in data:
-            vid = v.get("verse_id", str(v.get("chapter")) + "-" + str(v.get("verse")))
-            id_to_chapter[vid] = v.get("chapter")
-except Exception as e:
-    print(f"Warning: Could not load {DATA_FILE}: {e}")
 
 # ---------------- DATA MODELS ---------------- #
 class SearchRequest(BaseModel):
@@ -115,6 +157,9 @@ class SearchRequest(BaseModel):
 # ---------------- HELPER FUNCTIONS ---------------- #
 
 def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], initial_k: int, k: int = 60):
+    if not embedder or not collection:
+        raise RuntimeError("Search models are not initialized.")
+
     # 1. Vector Search
     query_embedding = embedder.encode(query).tolist()
     where_clause = {"chapter": chapter_filter} if chapter_filter else None
@@ -197,11 +242,16 @@ async def generate_advice(query: str, verse_text: str):
 
 @app.get("/")
 def home():
-    return {"message": "Anugamana API: Hybrid Search + Re-Ranking + RAG"}
+    status = "Online" if embedder and collection else "Maintenance Mode (Models Loading)"
+    return {"message": "Anugamana API: Hybrid Search + Re-Ranking + RAG", "status": status}
 
 @app.post("/search")
 @limiter.limit("15/minute") # Security: Rate Limit applied
 async def search_verses(request: Request, payload: SearchRequest):
+    # Check if models are ready
+    if not embedder or not collection or not reranker:
+        raise HTTPException(status_code=503, detail="Search services are initializing. Please try again in a few seconds.")
+
     try:
         # 1. Hybrid Search
         candidate_ids = await run_in_threadpool(
@@ -274,6 +324,8 @@ async def search_verses(request: Request, payload: SearchRequest):
             
         return {"results": []}
 
+    except HTTPException:
+        raise
     except Exception as e:
         # Security: Prevent Information Leakage
         logger.error(f"Internal Search Error: {e}", exc_info=True)
