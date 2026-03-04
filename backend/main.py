@@ -2,11 +2,13 @@ import pickle
 import json
 import os
 import shutil
-import logging
 import re
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+
+import structlog
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Load environment variables first
 load_dotenv()
@@ -37,21 +39,29 @@ BM25_FILE = os.path.join(BASE_DIR, "bm25_index.pkl")  # Dynamic Path
 BM25_IDS_FILE = os.path.join(BASE_DIR, "bm25_ids.pkl")  # Dynamic Path
 DATA_FILE = "gita_full.json"
 
-# Security: Secure Logger Setup
-logging.basicConfig(level=logging.INFO) # Changed to INFO to see startup logs
-logger = logging.getLogger(__name__)
+# Security: Structured JSON Logger Setup
+structlog.configure(
+    processors=[
+        structlog.stdlib.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.stdlib.BoundLogger,
+    logger_factory=structlog.PrintLoggerFactory(),
+)
+logger = structlog.get_logger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 try:
     if GEMINI_API_KEY:
         client = genai.Client(api_key=GEMINI_API_KEY)
-        print("✅ Gemini AI Connected (New SDK)")
+        logger.info("gemini_connected")
     else:
         client = None
-        print("⚠️ Warning: GEMINI_API_KEY not found.")
+        logger.warning("gemini_api_key_missing")
 except Exception as e:
-    print(f"⚠️ Client Init Error: {e}")
+    logger.error("gemini_client_init_error", error=str(e))
     client = None
 
 # ---------------- GLOBAL STATE ---------------- #
@@ -73,13 +83,13 @@ async def lifespan(app: FastAPI):
     """
     global embedder, reranker, chroma_client, collection, bm25, bm25_ids, id_to_chapter
 
-    print("🔄 Starting Anugamana Backend...")
+    logger.info("startup_begin")
 
     # --- PERSISTENCE CHECK ---
     # If we are using a custom DB_PATH (like /data) and it's empty,
     # copy the pre-baked DB from the Docker image to the new location.
     if BASE_DIR != "." and not os.path.exists(CHROMA_DIR):
-        print(f"📦 First run on Persistent Storage. Hydrating {BASE_DIR}...")
+        logger.info("hydrating_persistent_storage", base_dir=BASE_DIR)
         try:
             # Copy ChromaDB
             shutil.copytree("chroma_gita", CHROMA_DIR)
@@ -88,49 +98,49 @@ async def lifespan(app: FastAPI):
                 shutil.copy("bm25_index.pkl", BM25_FILE)
             if os.path.exists("bm25_ids.pkl"):
                 shutil.copy("bm25_ids.pkl", BM25_IDS_FILE)
-            print("✅ Database successfully migrated to Persistent Storage.")
+            logger.info("database_migrated")
         except Exception as e:
-            logger.error(f"❌ Failed to migrate database: {e}")
+            logger.error("database_migration_failed", error=str(e))
             # Fallback to local files if migration fails
     # -------------------------
 
     # 1. Load Embedding Model
     try:
-        print(f"   Loading Embedding Model ({EMBEDDING_MODEL})...")
+        logger.info("loading_embedding_model", model=EMBEDDING_MODEL)
         embedder = SentenceTransformer(EMBEDDING_MODEL)
     except Exception as e:
-        logger.error(f"❌ Failed to load Embedding Model: {e}")
+        logger.error("embedding_model_load_failed", error=str(e))
 
     # 2. Load Re-ranking Model
     try:
-        print(f"   Loading Re-ranking Model ({RERANK_MODEL})...")
+        logger.info("loading_reranking_model", model=RERANK_MODEL)
         reranker = CrossEncoder(RERANK_MODEL)
     except Exception as e:
-        logger.error(f"❌ Failed to load Reranker: {e}")
+        logger.error("reranker_load_failed", error=str(e))
 
     # 3. Connect to ChromaDB
     try:
-        print(f"   Connecting to ChromaDB at {CHROMA_DIR}...")
+        logger.info("connecting_chromadb", path=CHROMA_DIR)
         chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
         collection = chroma_client.get_collection(name=COLLECTION_NAME)
     except Exception as e:
-        logger.error(f"❌ Failed to connect to ChromaDB: {e}")
+        logger.error("chromadb_connection_failed", error=str(e))
 
     # 4. Load BM25 Index
-    print("   Loading BM25 Index...")
+    logger.info("loading_bm25_index")
     try:
         with open(BM25_FILE, "rb") as f:
             bm25 = pickle.load(f)
         with open(BM25_IDS_FILE, "rb") as f:
             bm25_ids = pickle.load(f)
-        print("   ✅ BM25 Loaded.")
+        logger.info("bm25_loaded")
     except FileNotFoundError:
-        print("   ⚠️ BM25 index files not found. Keyword search disabled.")
+        logger.warning("bm25_not_found", detail="Keyword search disabled")
         bm25 = None
         bm25_ids = []
 
     # 5. Build Chapter Map
-    print("   Building Chapter Map...")
+    logger.info("building_chapter_map")
     try:
         with open(DATA_FILE, encoding="utf-8") as f:
             data = json.load(f)
@@ -138,14 +148,14 @@ async def lifespan(app: FastAPI):
                 vid = v.get("verse_id", str(v.get("chapter")) + "-" + str(v.get("verse")))
                 id_to_chapter[vid] = v.get("chapter")
     except Exception as e:
-        print(f"   ⚠️ Could not load {DATA_FILE}: {e}")
+        logger.warning("chapter_map_load_failed", file=DATA_FILE, error=str(e))
 
-    print("✅ Startup Complete. Server is ready.")
+    logger.info("startup_complete")
     
     yield  # Control is yielded to the application
     
     # Shutdown logic (if any cleanup is needed)
-    print("🛑 Shutting down Anugamana Backend...")
+    logger.info("shutdown")
 
 # ---------------- INITIALIZATION ---------------- #
 # Security: Initialize Rate Limiter
@@ -228,38 +238,41 @@ def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], init
     sorted_ids = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
     return [vid for vid, score in sorted_ids[:initial_k]]
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def generate_advice(query: str, verse_text: str):
     """
     Uses Gemini (New SDK) to generate personalized advice.
+    Retries up to 3 times with exponential backoff on failure.
     """
     if not client:
         return None
-        
-    # Security: Mitigate Prompt Injection with delimiters
-    prompt = f"""
-    You are a wise spiritual guide. 
-    The user asked the question enclosed in triple backticks:
-    ```
-    {query}
-    ```
 
-    The Bhagavad Gita says:
-    "{verse_text}"
-    
-    Explain briefly how this verse answers their question and offer one actionable piece of advice.
-    Keep it warm, empathetic, and under 100 words.
-    """
-    
+    # Security: Use System Instructions for persona (prevents prompt injection)
+    system_instruction = (
+        "You are Lord Krishna, a wise and compassionate spiritual guide from the Bhagavad Gita. "
+        "You speak with warmth and empathy. You always ground your advice in the verse provided. "
+        "Keep your response under 100 words."
+    )
+
+    user_prompt = (
+        f"The user asked the following question:\n"
+        f"```\n{query}\n```\n\n"
+        f"The Bhagavad Gita says:\n"
+        f"\"{verse_text}\"\n\n"
+        f"Explain briefly how this verse answers their question and offer one actionable piece of advice."
+    )
+
     try:
         response = await run_in_threadpool(
             client.models.generate_content,
-            model="gemini-2.5-flash", 
-            contents=prompt
+            model="gemini-2.5-flash",
+            contents=user_prompt,
+            config={"system_instruction": system_instruction},
         )
         return response.text
     except Exception as e:
-        logger.error(f"LLM Error: {e}")
-        return None
+        logger.error("llm_error", error=str(e))
+        raise  # Re-raise so tenacity can retry
 
 # ---------------- API ENDPOINTS ---------------- #
 
@@ -330,7 +343,11 @@ async def search_verses(request: Request, payload: SearchRequest):
             rag_advice = None
             if top_results and payload.limit == 1:
                  top_verse = top_results[0]
-                 rag_advice = await generate_advice(payload.query, top_verse["data"]["text"])
+                 try:
+                     rag_advice = await generate_advice(payload.query, top_verse["data"]["text"])
+                 except Exception:
+                     logger.warning("rag_advice_failed_after_retries")
+                     rag_advice = None
 
             for item in top_results:
                 res = {
@@ -351,5 +368,5 @@ async def search_verses(request: Request, payload: SearchRequest):
         raise
     except Exception as e:
         # Security: Prevent Information Leakage
-        logger.error(f"Internal Search Error: {e}", exc_info=True)
+        logger.error("internal_search_error", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail="An internal error occurred while processing the search.")

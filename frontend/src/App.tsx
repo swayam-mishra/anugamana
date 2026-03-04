@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import axios from 'axios';
+import axios, { isAxiosError } from 'axios';
+import toast, { Toaster } from 'react-hot-toast';
 import { Header } from './components/Header';
 import { HeroSection } from './components/HeroSection';
 import { ResultCard } from './components/ResultCard';
@@ -28,7 +29,7 @@ export default function App() {
     if (!userInput.trim()) return;
     setState('loading');
     try {
-      const response = await axios.post('https://cowsyy-anugamana-backend.hf.space/search', {
+      const response = await axios.post(`${import.meta.env.VITE_API_URL}/search`, {
         query: userInput,
         limit: 1,
         chapter: selectedChapter
@@ -60,12 +61,12 @@ export default function App() {
         console.warn("No results found.");
         setState('error');
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error("Error connecting to backend:", error);
       
       // Specific handling for Rate Limit (429)
-      if (error.response && error.response.status === 429) {
-        alert("You are searching too fast! Please wait a moment and try again.");
+      if (isAxiosError(error) && error.response?.status === 429) {
+        toast.error("You are searching too fast! Please wait a moment and try again.");
         setState('idle');
       } else {
         setState('error');
@@ -83,6 +84,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-linear-to-b from-amber-50 to-orange-50">
+      <Toaster position="top-center" />
       <Header showBackButton={state === 'result'} onBack={handleSearchAgain} />
       
       {state === 'result' && selectedVerse ? (
