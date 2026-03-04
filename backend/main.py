@@ -1,8 +1,6 @@
-import pickle
+import hashlib
 import json
 import os
-import shutil
-import re
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -17,10 +15,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer, CrossEncoder 
-import chromadb
-import numpy as np
-from google import genai 
+from sentence_transformers import SentenceTransformer, CrossEncoder
+from pinecone import Pinecone
+from google import genai
+from upstash_redis import Redis
 
 # Security: Rate Limiting Imports
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -28,16 +26,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 # ---------------- CONFIGURATION ---------------- #
-# Configurable Base Directory via Environment Variable
-BASE_DIR = os.getenv("DB_PATH", ".")
-
-CHROMA_DIR = os.path.join(BASE_DIR, "chroma_gita")  # Dynamic Path
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-COLLECTION_NAME = "gita_verses"
-BM25_FILE = os.path.join(BASE_DIR, "bm25_index.pkl")  # Dynamic Path
-BM25_IDS_FILE = os.path.join(BASE_DIR, "bm25_ids.pkl")  # Dynamic Path
-DATA_FILE = "gita_full.json"
 
 # Security: Structured JSON Logger Setup
 structlog.configure(
@@ -64,15 +54,17 @@ except Exception as e:
     logger.error("gemini_client_init_error", error=str(e))
     client = None
 
+# Initialize Upstash Redis
+redis = Redis(
+    url=os.getenv("UPSTASH_REDIS_REST_URL"),
+    token=os.getenv("UPSTASH_REDIS_REST_TOKEN")
+)
+
 # ---------------- GLOBAL STATE ---------------- #
 # Initialize as None. They will be populated in lifespan.
 embedder: Optional[SentenceTransformer] = None
 reranker: Optional[CrossEncoder] = None
-chroma_client: Optional[chromadb.PersistentClient] = None
-collection: Optional[Any] = None
-bm25: Optional[Any] = None
-bm25_ids: list = []
-id_to_chapter: dict = {}
+pc_index: Optional[Any] = None
 
 # ---------------- LIFESPAN MANAGER ---------------- #
 @asynccontextmanager
@@ -81,28 +73,9 @@ async def lifespan(app: FastAPI):
     Lifespan context manager handles startup and shutdown events.
     Models and DB connections are loaded here to prevent import-time blocking/crashes.
     """
-    global embedder, reranker, chroma_client, collection, bm25, bm25_ids, id_to_chapter
+    global embedder, reranker, pc_index
 
     logger.info("startup_begin")
-
-    # --- PERSISTENCE CHECK ---
-    # If we are using a custom DB_PATH (like /data) and it's empty,
-    # copy the pre-baked DB from the Docker image to the new location.
-    if BASE_DIR != "." and not os.path.exists(CHROMA_DIR):
-        logger.info("hydrating_persistent_storage", base_dir=BASE_DIR)
-        try:
-            # Copy ChromaDB
-            shutil.copytree("chroma_gita", CHROMA_DIR)
-            # Copy BM25 Indices
-            if os.path.exists("bm25_index.pkl"):
-                shutil.copy("bm25_index.pkl", BM25_FILE)
-            if os.path.exists("bm25_ids.pkl"):
-                shutil.copy("bm25_ids.pkl", BM25_IDS_FILE)
-            logger.info("database_migrated")
-        except Exception as e:
-            logger.error("database_migration_failed", error=str(e))
-            # Fallback to local files if migration fails
-    # -------------------------
 
     # 1. Load Embedding Model
     try:
@@ -118,37 +91,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("reranker_load_failed", error=str(e))
 
-    # 3. Connect to ChromaDB
+    # 3. Connect to Pinecone
     try:
-        logger.info("connecting_chromadb", path=CHROMA_DIR)
-        chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-        collection = chroma_client.get_collection(name=COLLECTION_NAME)
+        logger.info("connecting_pinecone")
+        pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+        pc_index = pc.Index("anugamana")
+        logger.info("pinecone_connected")
     except Exception as e:
-        logger.error("chromadb_connection_failed", error=str(e))
-
-    # 4. Load BM25 Index
-    logger.info("loading_bm25_index")
-    try:
-        with open(BM25_FILE, "rb") as f:
-            bm25 = pickle.load(f)
-        with open(BM25_IDS_FILE, "rb") as f:
-            bm25_ids = pickle.load(f)
-        logger.info("bm25_loaded")
-    except FileNotFoundError:
-        logger.warning("bm25_not_found", detail="Keyword search disabled")
-        bm25 = None
-        bm25_ids = []
-
-    # 5. Build Chapter Map
-    logger.info("building_chapter_map")
-    try:
-        with open(DATA_FILE, encoding="utf-8") as f:
-            data = json.load(f)
-            for v in data:
-                vid = v.get("verse_id", str(v.get("chapter")) + "-" + str(v.get("verse")))
-                id_to_chapter[vid] = v.get("chapter")
-    except Exception as e:
-        logger.warning("chapter_map_load_failed", file=DATA_FILE, error=str(e))
+        logger.error("pinecone_connection_failed", error=str(e))
 
     logger.info("startup_complete")
     
@@ -188,55 +138,6 @@ class SearchRequest(BaseModel):
     chapter: Optional[int] = Field(default=None, ge=1, le=18) # Only 18 chapters exist
 
 # ---------------- HELPER FUNCTIONS ---------------- #
-
-def _calculate_hybrid_candidates(query: str, chapter_filter: Optional[int], initial_k: int, k: int = 60):
-    if not embedder or not collection:
-        raise RuntimeError("Search models are not initialized.")
-
-    # 1. Vector Search
-    query_embedding = embedder.encode(query).tolist()
-    where_clause = {"chapter": chapter_filter} if chapter_filter else None
-    
-    vector_results = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=initial_k,
-        where=where_clause
-    )
-    vector_ids = vector_results['ids'][0] if vector_results['ids'] else []
-    vector_ranks = {vid: i for i, vid in enumerate(vector_ids)}
-
-    # 2. BM25 Search
-    bm25_ranks = {}
-    if bm25:
-        # Improved Tokenization: Strip punctuation
-        tokenized_query = re.findall(r'\b\w+\b', query.lower())
-        bm25_scores = bm25.get_scores(tokenized_query)
-        top_n = initial_k * 3 
-        top_indices = np.argsort(bm25_scores)[::-1][:top_n]
-        
-        rank = 0
-        for idx in top_indices:
-            if bm25_scores[idx] <= 0: continue
-            vid = bm25_ids[idx]
-            if chapter_filter is not None:
-                if id_to_chapter.get(vid) != chapter_filter: continue
-            
-            bm25_ranks[vid] = rank
-            rank += 1
-            if rank >= initial_k: break
-
-    # 3. RRF Fusion
-    combined_scores = {}
-    all_found_ids = set(vector_ranks.keys()) | set(bm25_ranks.keys())
-    
-    for vid in all_found_ids:
-        score = 0.0
-        if vid in vector_ranks: score += 1 / (k + vector_ranks[vid] + 1)
-        if vid in bm25_ranks: score += 1 / (k + bm25_ranks[vid] + 1)
-        combined_scores[vid] = score
-
-    sorted_ids = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
-    return [vid for vid, score in sorted_ids[:initial_k]]
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def generate_advice(query: str, verse_text: str):
@@ -278,91 +179,125 @@ async def generate_advice(query: str, verse_text: str):
 
 @app.get("/")
 def home():
-    status = "Online" if embedder and collection else "Maintenance Mode (Models Loading)"
-    return {"message": "Anugamana API: Hybrid Search + Re-Ranking + RAG", "status": status}
+    status = "Online" if embedder and pc_index else "Maintenance Mode (Models Loading)"
+    return {"message": "Anugamana API: Pinecone Search + Re-Ranking + RAG", "status": status}
 
 @app.post("/search")
 @limiter.limit("15/minute") # Security: Rate Limit applied
 async def search_verses(request: Request, payload: SearchRequest):
     # Check if models are ready
-    if not embedder or not collection or not reranker:
+    if not embedder or not pc_index or not reranker:
         raise HTTPException(status_code=503, detail="Search services are initializing. Please try again in a few seconds.")
 
     try:
-        # 1. Hybrid Search
-        candidate_ids = await run_in_threadpool(
-            _calculate_hybrid_candidates, 
-            payload.query, 
-            payload.chapter, 
-            20
+        # 1. Normalize and hash the query to create a unique Redis key
+        normalized_query = payload.query.lower().strip()
+        query_hash = hashlib.sha256(normalized_query.encode('utf-8')).hexdigest()
+        cache_key = f"search_cache:{query_hash}"
+
+        # 2. Check Redis for a cached response
+        logger.info("checking_cache", query=payload.query)
+        cached_result = redis.get(cache_key)
+
+        if cached_result:
+            logger.info("cache_hit", query=payload.query)
+            return cached_result if isinstance(cached_result, dict) else json.loads(cached_result)
+
+        logger.info("cache_miss", query=payload.query)
+
+        # --- VECTOR SEARCH ---
+        logger.info("searching_pinecone", query=payload.query)
+
+        # 3. Embed the query
+        query_embedding = await run_in_threadpool(embedder.encode, payload.query)
+        query_embedding = query_embedding.tolist()
+
+        # 4. Query Pinecone
+        # We fetch limit * 2 to give the CrossEncoder re-ranker more options to evaluate
+        filter_dict = {"chapter": {"$eq": payload.chapter}} if payload.chapter else None
+        pc_results = await run_in_threadpool(
+            pc_index.query,
+            vector=query_embedding,
+            top_k=payload.limit * 2,
+            include_metadata=True,
+            filter=filter_dict
         )
-        
-        if not candidate_ids:
+
+        # 5. Format results for the re-ranker
+        initial_results = []
+        for match in pc_results['matches']:
+            meta = match['metadata']
+            initial_results.append({
+                "id": match['id'],
+                "chapter": meta.get("chapter"),
+                "verse": meta.get("verse"),
+                "text": meta.get("text", ""),
+                "translation": meta.get("translation", ""),
+                "meaning": meta.get("meaning", ""),
+                "score": match['score']
+            })
+
+        if not initial_results:
             return {"results": []}
 
-        # 2. Fetch Text (Optimized: Non-blocking DB call)
-        results_data = await run_in_threadpool(
-            collection.get,
-            ids=candidate_ids, 
-            include=["documents", "metadatas"]
-        )
-        
-        fetched_map = {}
-        for i, vid in enumerate(results_data['ids']):
-            fetched_map[vid] = {
-                "text": results_data['documents'][i],
-                "metadata": results_data['metadatas'][i]
-            }
-
-        # 3. Prepare for Re-ranking
+        # --- RE-RANKING ---
         pairs = []
-        valid_ids = []
-        for vid in candidate_ids:
-            if vid in fetched_map:
-                pairs.append([payload.query, fetched_map[vid]["text"]])
-                valid_ids.append(vid)
+        for item in initial_results:
+            rerank_text = f"{item['translation']} {item['meaning']}"
+            pairs.append([payload.query, rerank_text])
 
-        if pairs:
-            # 4. Re-ranking
-            cross_scores = await run_in_threadpool(reranker.predict, pairs)
-            
-            scored_results = []
-            for i, score in enumerate(cross_scores):
-                scored_results.append({
-                    "id": valid_ids[i],
-                    "score": float(score),
-                    "data": fetched_map[valid_ids[i]]
-                })
-            
-            scored_results.sort(key=lambda x: x["score"], reverse=True)
-            
-            # 5. Format & RAG
-            final_results = []
-            top_results = scored_results[:payload.limit]
-            
-            rag_advice = None
-            if top_results and payload.limit == 1:
-                 top_verse = top_results[0]
-                 try:
-                     rag_advice = await generate_advice(payload.query, top_verse["data"]["text"])
-                 except Exception:
-                     logger.warning("rag_advice_failed_after_retries")
-                     rag_advice = None
+        cross_scores = await run_in_threadpool(reranker.predict, pairs)
 
-            for item in top_results:
-                res = {
-                    "text": item["data"]["text"],
-                    "metadata": item["data"]["metadata"],
-                    "score": item["score"]
-                }
-                if rag_advice and item == top_results[0]:
-                    res["metadata"]["ai_advice"] = rag_advice
-                    
-                final_results.append(res)
+        scored_results = []
+        for i, score in enumerate(cross_scores):
+            scored_results.append({
+                "score": float(score),
+                "data": initial_results[i]
+            })
 
-            return {"results": final_results}
-            
-        return {"results": []}
+        scored_results.sort(key=lambda x: x["score"], reverse=True)
+
+        # Format final results
+        final_results = []
+        top_results = scored_results[:payload.limit]
+
+        rag_advice = None
+        if top_results and payload.limit == 1:
+            top_verse = top_results[0]
+            try:
+                rag_advice = await generate_advice(
+                    payload.query,
+                    f"{top_verse['data']['translation']} {top_verse['data']['meaning']}"
+                )
+            except Exception:
+                logger.warning("rag_advice_failed_after_retries")
+                rag_advice = None
+
+        for item in top_results:
+            d = item["data"]
+            res = {
+                "text": d.get("text", ""),
+                "metadata": {
+                    "chapter": d.get("chapter"),
+                    "verse": d.get("verse"),
+                    "text": d.get("text", ""),
+                    "translation": d.get("translation", ""),
+                    "meaning": d.get("meaning", ""),
+                },
+                "score": item["score"]
+            }
+            if rag_advice and item == top_results[0]:
+                res["metadata"]["ai_advice"] = rag_advice
+
+            final_results.append(res)
+
+        # 6. Construct final response and cache it
+        final_response = {"results": final_results}
+
+        logger.info("saving_to_cache", query=payload.query)
+        redis.set(cache_key, json.dumps(final_response), ex=86400)  # TTL: 24 hours
+
+        return final_response
 
     except HTTPException:
         raise
