@@ -1,18 +1,43 @@
 import json
 import os
-from sentence_transformers import SentenceTransformer
+import numpy as np
+from transformers import AutoTokenizer
+from optimum.onnxruntime import ORTModelForFeatureExtraction
 from pinecone import Pinecone
 from dotenv import load_dotenv
 
 # Load environment variables from .env
 load_dotenv()
 
-# Initialize Pinecone
+# Initialize Pinecone and connect to existing index
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 index = pc.Index("anugamana")
 
-print("Loading embedding model...")
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# Load the exact quantized ONNX model used in production
+print("Loading quantized ONNX embedding model...")
+model_id = "Xenova/all-MiniLM-L6-v2"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = ORTModelForFeatureExtraction.from_pretrained(
+    model_id, subfolder="onnx", file_name="model_quantized.onnx"
+)
+
+# Helper function to pool the ONNX outputs into a single 384-dim vector
+def get_embedding(text):
+    inputs = tokenizer(text, return_tensors="np", padding=True, truncation=True)
+    outputs = model(**inputs)
+    
+    # Mean Pooling
+    token_embeddings = outputs.last_hidden_state
+    attention_mask = inputs['attention_mask']
+    
+    input_mask_expanded = np.expand_dims(attention_mask, axis=-1).astype(float)
+    input_mask_expanded = np.broadcast_to(input_mask_expanded, token_embeddings.shape)
+    
+    sum_embeddings = np.sum(token_embeddings * input_mask_expanded, axis=1)
+    sum_mask = np.clip(np.sum(input_mask_expanded, axis=1), a_min=1e-9, a_max=None)
+    
+    pooled_output = sum_embeddings / sum_mask
+    return pooled_output[0].tolist()
 
 print("Loading Gita data...")
 with open("gita_full.json", "r", encoding="utf-8") as f:
@@ -23,11 +48,12 @@ batch_size = 100
 vectors = []
 
 for i, verse in enumerate(verses):
-    # Combine relevant text for embedding (matching your previous strategy)
     text_to_embed = f"Chapter {verse['chapter']}, Verse {verse['verse']}: {verse['translation']} {verse.get('purport', '')}"
-    embedding = model.encode(text_to_embed).tolist()
     
-    # Pinecone requires string IDs
+    # Get 384-dim ONNX embedding
+    embedding = get_embedding(text_to_embed)
+    
+    # Same ID format as before so it overwrites smoothly
     vector_id = f"c{verse['chapter']}v{verse['verse']}"
     
     metadata = {
@@ -44,15 +70,13 @@ for i, verse in enumerate(verses):
         "metadata": metadata
     })
     
-    # Upsert in batches of 100 to respect network limits
     if len(vectors) >= batch_size:
         index.upsert(vectors=vectors)
         vectors = []
         print(f"Upserted batch up to verse {i+1}")
 
-# Upsert any remaining vectors
 if vectors:
     index.upsert(vectors=vectors)
     print("Final batch upserted.")
 
-print("Indexing complete! You can verify the vector count in the Pinecone dashboard.")
+print("Indexing complete! Pinecone is now synced with the new ONNX models.")

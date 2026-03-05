@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import os
@@ -5,6 +6,7 @@ from typing import Optional, Any
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
+import numpy as np
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -13,9 +15,9 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from transformers import AutoTokenizer
+from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTModelForSequenceClassification
 from pinecone import Pinecone
 from google import genai
 from upstash_redis import Redis
@@ -26,8 +28,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 # ---------------- CONFIGURATION ---------------- #
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
-RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2"
+RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"
 
 # Security: Structured JSON Logger Setup
 structlog.configure(
@@ -62,9 +64,11 @@ redis = Redis(
 
 # ---------------- GLOBAL STATE ---------------- #
 # Initialize as None. They will be populated in lifespan.
-embedder: Optional[SentenceTransformer] = None
-reranker: Optional[CrossEncoder] = None
+embedder: Optional[Any] = None
+reranker: Optional[Any] = None
 pc_index: Optional[Any] = None
+tokenizer_emb: Optional[Any] = None
+tokenizer_rerank: Optional[Any] = None
 
 # ---------------- LIFESPAN MANAGER ---------------- #
 @asynccontextmanager
@@ -73,21 +77,27 @@ async def lifespan(app: FastAPI):
     Lifespan context manager handles startup and shutdown events.
     Models and DB connections are loaded here to prevent import-time blocking/crashes.
     """
-    global embedder, reranker, pc_index
+    global embedder, reranker, pc_index, tokenizer_emb, tokenizer_rerank
 
     logger.info("startup_begin")
 
-    # 1. Load Embedding Model
+    # 1. Load Quantized Embedding Model
     try:
         logger.info("loading_embedding_model", model=EMBEDDING_MODEL)
-        embedder = SentenceTransformer(EMBEDDING_MODEL)
+        tokenizer_emb = AutoTokenizer.from_pretrained(EMBEDDING_MODEL)
+        embedder = ORTModelForFeatureExtraction.from_pretrained(
+            EMBEDDING_MODEL, subfolder="onnx", file_name="model_quantized.onnx"
+        )
     except Exception as e:
         logger.error("embedding_model_load_failed", error=str(e))
 
-    # 2. Load Re-ranking Model
+    # 2. Load Quantized Re-ranking Model
     try:
         logger.info("loading_reranking_model", model=RERANK_MODEL)
-        reranker = CrossEncoder(RERANK_MODEL)
+        tokenizer_rerank = AutoTokenizer.from_pretrained(RERANK_MODEL)
+        reranker = ORTModelForSequenceClassification.from_pretrained(
+            RERANK_MODEL, subfolder="onnx", file_name="model_quantized.onnx"
+        )
     except Exception as e:
         logger.error("reranker_load_failed", error=str(e))
 
@@ -139,6 +149,39 @@ class SearchRequest(BaseModel):
 
 # ---------------- HELPER FUNCTIONS ---------------- #
 
+def mean_pooling(model_output, attention_mask):
+    """Apply mean pooling to token embeddings, weighted by attention mask."""
+    token_embeddings = model_output[0]  # (batch, seq_len, hidden)
+    mask_expanded = np.expand_dims(attention_mask, axis=-1)  # (batch, seq_len, 1)
+    summed = np.sum(token_embeddings * mask_expanded, axis=1)
+    counts = np.clip(np.sum(mask_expanded, axis=1), a_min=1e-9, a_max=None)
+    return summed / counts
+
+
+def encode_query(text: str) -> list[float]:
+    """Encode a single query string into a normalized embedding vector."""
+    inputs = tokenizer_emb(text, padding=True, truncation=True, return_tensors="np")
+    outputs = embedder(**inputs)
+    embedding = mean_pooling(outputs, inputs["attention_mask"])
+    # L2 normalize
+    norm = np.linalg.norm(embedding, axis=1, keepdims=True)
+    embedding = embedding / np.clip(norm, a_min=1e-9, a_max=None)
+    return embedding[0].tolist()
+
+
+def rerank_pairs(query: str, texts: list[str]) -> list[float]:
+    """Score query-text pairs using the quantized cross-encoder."""
+    inputs = tokenizer_rerank(
+        [query] * len(texts), texts,
+        padding=True, truncation=True, return_tensors="np",
+    )
+    outputs = reranker(**inputs)
+    logits = outputs.logits  # (batch, 1) or (batch, num_labels)
+    if logits.ndim == 2 and logits.shape[1] == 1:
+        return logits[:, 0].tolist()
+    return logits.tolist()
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 async def generate_advice(query: str, verse_text: str):
     """
@@ -164,8 +207,7 @@ async def generate_advice(query: str, verse_text: str):
     )
 
     try:
-        response = await run_in_threadpool(
-            client.models.generate_content,
+        response = await client.aio.models.generate_content(
             model="gemini-2.5-flash",
             contents=user_prompt,
             config={"system_instruction": system_instruction},
@@ -209,13 +251,12 @@ async def search_verses(request: Request, payload: SearchRequest):
         logger.info("searching_pinecone", query=payload.query)
 
         # 3. Embed the query
-        query_embedding = await run_in_threadpool(embedder.encode, payload.query)
-        query_embedding = query_embedding.tolist()
+        query_embedding = await asyncio.to_thread(encode_query, payload.query)
 
         # 4. Query Pinecone
         # We fetch limit * 2 to give the CrossEncoder re-ranker more options to evaluate
         filter_dict = {"chapter": {"$eq": payload.chapter}} if payload.chapter else None
-        pc_results = await run_in_threadpool(
+        pc_results = await asyncio.to_thread(
             pc_index.query,
             vector=query_embedding,
             top_k=payload.limit * 2,
@@ -241,12 +282,11 @@ async def search_verses(request: Request, payload: SearchRequest):
             return {"results": []}
 
         # --- RE-RANKING ---
-        pairs = []
+        rerank_texts = []
         for item in initial_results:
-            rerank_text = f"{item['translation']} {item['meaning']}"
-            pairs.append([payload.query, rerank_text])
+            rerank_texts.append(f"{item['translation']} {item['meaning']}")
 
-        cross_scores = await run_in_threadpool(reranker.predict, pairs)
+        cross_scores = await asyncio.to_thread(rerank_pairs, payload.query, rerank_texts)
 
         scored_results = []
         for i, score in enumerate(cross_scores):

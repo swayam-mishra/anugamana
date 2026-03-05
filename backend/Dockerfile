@@ -1,47 +1,55 @@
-# Use official Python runtime
-FROM python:3.10-slim
+# ==========================================
+# Stage 1: Builder
+# ==========================================
+FROM python:3.11-slim AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Install dependencies
+# Install build dependencies needed for compiling Python packages
+RUN apt-get update && apt-get install -y --no-install-recommends gcc build-essential && rm -rf /var/lib/apt/lists/*
+
+# Create a virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy all backend files
-COPY . .
+# ==========================================
+# Stage 2: Production Final Image
+# ==========================================
+FROM python:3.11-slim
 
-# Create the user FIRST so we can assign permissions to them
+WORKDIR /app
+
+# Create a non-root user for security
 RUN useradd -m -u 1000 user
 
-# Create directory and generate the Vector Index (runs as root)
-RUN mkdir -p chroma_gita
-RUN python indexer.py
+# Copy the virtual environment from the builder stage
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# --- THE FIX FOR PERMISSIONS ---
-# Give the 'user' full ownership of the database folder and ALL its contents
-RUN chown -R user:user chroma_gita
-RUN chown user:user *.pkl
+# Copy the application code
+COPY . .
 
-# --- THE OPTIMIZATION: PRE-DOWNLOAD MODELS ---
-# This ensures models are baked into the image, preventing slow cold-starts
-RUN python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; \
-    SentenceTransformer('sentence-transformers/all-mpnet-base-v2'); \
-    CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
-# ----------------------------------------------
+# Change ownership of the app directory to the non-root user
+RUN chown -R user:user /app
 
-# Switch to the non-root user
+# Pre-download ONNX models to prevent slow cold-starts
+RUN python -c "from transformers import AutoTokenizer; \
+    from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTModelForSequenceClassification; \
+    AutoTokenizer.from_pretrained('Xenova/all-MiniLM-L6-v2'); \
+    ORTModelForFeatureExtraction.from_pretrained('Xenova/all-MiniLM-L6-v2', subfolder='onnx', file_name='model_quantized.onnx'); \
+    AutoTokenizer.from_pretrained('Xenova/ms-marco-MiniLM-L-6-v2'); \
+    ORTModelForSequenceClassification.from_pretrained('Xenova/ms-marco-MiniLM-L-6-v2', subfolder='onnx', file_name='model_quantized.onnx')"
+
 USER user
-ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH
+ENV HOME=/home/user
 
-# Default DB_PATH is current dir.
-# To enable persistence on HF, set DB_PATH to /data in Space Settings.
-ENV DB_PATH="."
+# Expose the Gunicorn port
+EXPOSE 8000
 
-# Expose port 7860
-EXPOSE 7860
-
-# Start the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# Start Gunicorn with Uvicorn workers
+CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
