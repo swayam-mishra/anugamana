@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@tanstack/react-query": "^5.90.21",
     "axios": "^1.13.2",
     "lucide-react": "^0.487.0",
     "motion": "^11.0.0",

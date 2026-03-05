@@ -1,127 +1,82 @@
 import { useState } from 'react';
-import axios, { isAxiosError } from 'axios';
-import toast, { Toaster } from 'react-hot-toast';
-import { Header } from './components/Header';
-import { HeroSection } from './components/HeroSection';
-import { ResultCard } from './components/ResultCard';
+import { useMutation } from '@tanstack/react-query';
+import Header from './components/Header';
+import HeroSection from './components/HeroSection';
+import ResultCard from './components/ResultCard';
 
-type AppState = 'idle' | 'loading' | 'result' | 'error';
+// Define the API call function outside the component
+const fetchVerses = async (searchQuery: string) => {
+  // Use your actual backend URL (from Vercel/Render/HF) or localhost for dev
+  const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+  
+  const response = await fetch(`${apiUrl}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: searchQuery, limit: 5 }),
+  });
 
-interface Verse {
-  chapter: number;
-  verse: number;
-  sanskrit: string;
-  transliteration: string;
-  synonyms: string;
-  translation: string;
-  purport: string;
-  interpretation: string;
-  keywords: string[];
-}
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+};
 
-export default function App() {
-  const [state, setState] = useState<AppState>('idle');
-  const [userInput, setUserInput] = useState('');
-  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
-  const [selectedVerse, setSelectedVerse] = useState<Verse | null>(null);
+function App() {
+  const [query, setQuery] = useState('');
 
-  const handleSeekGuidance = async () => {
-    if (!userInput.trim()) return;
-    setState('loading');
-    try {
-      const response = await axios.post(`${import.meta.env.VITE_API_URL}/search`, {
-        query: userInput,
-        limit: 1,
-        chapter: selectedChapter
-      });
-      const data = response.data.results[0];
-      if (data) {
-        const rawEmotions = data.metadata.emotions || ""; 
-        const emotionTags = rawEmotions.split(',').map((s: string) => s.trim()).filter(Boolean);
-        const aiAdvice = data.metadata.ai_advice;
-        const finalInterpretation = aiAdvice 
-          ? aiAdvice 
-          : (emotionTags.length > 0 
-              ? `This verse specifically addresses feelings of ${emotionTags[0]} and offers spiritual guidance on how to navigate them.`
-              : 'This verse resonates with your current state of mind. Reflect on its meaning to find clarity.');
-        const verseData: Verse = {
-          chapter: data.metadata.chapter,
-          verse: data.metadata.verse,
-          sanskrit: data.metadata.sanskrit,
-          transliteration: data.metadata.transliteration || '',
-          synonyms: data.metadata.synonyms || '',
-          translation: data.metadata.translation || data.text,
-          purport: data.metadata.purport || '',
-          interpretation: finalInterpretation,
-          keywords: emotionTags 
-        };
-        setSelectedVerse(verseData);
-        setState('result');
-      } else {
-        console.warn("No results found.");
-        setState('error');
-      }
-    } catch (error: unknown) {
-      console.error("Error connecting to backend:", error);
-      
-      // Specific handling for Rate Limit (429)
-      if (isAxiosError(error) && error.response?.status === 429) {
-        toast.error("You are searching too fast! Please wait a moment and try again.");
-        setState('idle');
-      } else {
-        setState('error');
-      }
-    }
-  };
+  // React Query useMutation handles all the heavy lifting
+  const searchMutation = useMutation({
+    mutationFn: fetchVerses,
+  });
 
-  const handleSearchAgain = () => {
-    setState('idle');
-    setUserInput('');
-    setSelectedVerse(null);
-    // Deliberately NOT resetting selectedChapter so users can
-    // ask multiple questions within the same chapter context.
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+    
+    // Trigger the mutation
+    searchMutation.mutate(query);
   };
 
   return (
-    <div className="min-h-screen bg-linear-to-b from-amber-50 to-orange-50">
-      <Toaster position="top-center" />
-      <Header showBackButton={state === 'result'} onBack={handleSearchAgain} />
-      
-      {state === 'result' && selectedVerse ? (
-        <ResultCard
-          verse={selectedVerse}
-          onSearchAgain={handleSearchAgain}
-          userInput={userInput}
-        />
-      ) : state === 'error' ? (
-        <main className="container mx-auto px-4 flex flex-col items-center justify-center min-h-[calc(100vh-80px)]">
-          <div className="text-center space-y-4">
-            <h2 className="text-2xl font-serif text-red-700">Connection Error</h2>
-            <p className="text-stone-600">
-              Could not reach the wisdom engine. Is the backend server running?
-            </p>
-            <button 
-              onClick={handleSearchAgain}
-              className="px-6 py-2 bg-orange-700 text-white rounded-full hover:bg-orange-800 transition-colors"
-            >
-              Try Again
-            </button>
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <Header />
+      <main className="container mx-auto px-4 py-8">
+        <HeroSection />
+        
+        {/* Search Form */}
+        <form onSubmit={handleSearch} className="max-w-2xl mx-auto mb-12 flex gap-4">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Ask a question..."
+            className="flex-1 px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none"
+          />
+          <button 
+            type="submit" 
+            disabled={searchMutation.isPending}
+            className="bg-orange-600 hover:bg-orange-700 text-white px-8 py-3 rounded-lg font-medium transition-colors disabled:opacity-50"
+          >
+            {searchMutation.isPending ? 'Searching...' : 'Search'}
+          </button>
+        </form>
+
+        {/* Status Messages */}
+        {searchMutation.isError && (
+          <div className="text-red-500 text-center mb-8">
+            An error occurred: {searchMutation.error.message}
           </div>
-        </main>
-      ) : (
-        <main className="container mx-auto px-4 flex items-center justify-center min-h-[calc(100vh-80px)]">
-          <div className="w-full max-w-3xl">
-            <HeroSection
-              state={state === 'loading' ? 'loading' : 'idle'}
-              userInput={userInput}
-              onInputChange={setUserInput}
-              onSeekGuidance={handleSeekGuidance}
-              selectedChapter={selectedChapter}
-              onChapterChange={setSelectedChapter}
-            />
-          </div>
-        </main>
-      )}
+        )}
+
+        {/* Results */}
+        <div className="max-w-4xl mx-auto space-y-6">
+          {searchMutation.data?.results?.map((result: any, index: number) => (
+            <ResultCard key={index} data={result} />
+          ))}
+        </div>
+      </main>
     </div>
   );
 }
+
+export default App;

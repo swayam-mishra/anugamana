@@ -1,0 +1,120 @@
+name: Automated Release & Changelog
+
+on:
+  workflow_dispatch: # Allows manual triggering from the GitHub UI
+
+permissions:
+  contents: write    # Required to push commits, tags, and create releases
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all tags and branches
+
+      - name: Get Commits Since Last Tag
+        id: get_commits
+        run: |
+          # Find the latest tag, default to v0.0.0 if none exists
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+          
+          # Extract commit messages
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log --pretty=format:"- %s")
+          else
+            COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"- %s")
+          fi
+          
+          # Safely pass multi-line commit string to the environment
+          echo "COMMITS<<EOF" >> $GITHUB_ENV
+          echo "$COMMITS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Generate Changelog via Gemini AI
+        id: gemini
+        uses: actions/github-script@v7
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COMMITS: ${{ env.COMMITS }}
+          LATEST_TAG: ${{ env.LATEST_TAG }}
+        with:
+          script: |
+            const { GEMINI_API_KEY, COMMITS, LATEST_TAG } = process.env;
+            
+            if (!COMMITS.trim()) {
+              console.log("No new commits found since last tag. Skipping release.");
+              process.exit(0);
+            }
+
+            const prompt = `Act as a release manager. Here are the commit messages since the last release:\n\n${COMMITS}\n\nBased on these commits, determine the semantic version bump (major, minor, or patch). Write a detailed changelog using EXACTLY this format (omit any section that has no items, but always include at least one section):\n\n### Added\n- [New feature — described in plain language]\n\n### Fixed\n- [Bug fixed — describe what was broken and what now works]\n\n### Changed\n- [Something that changed behaviour — explain the before and after]\n\n### Known Issues\n- [Honest list of things not fixed yet]\n\nRules:\n- Each bullet must be a plain-language sentence, not a raw commit message.\n- Use an em dash (—) to separate the item title from its description when helpful.\n- Do NOT include a top-level heading; I will add it myself.\n\nReturn ONLY a valid JSON object with two keys: "bump" (the string "major", "minor", or "patch") and "changelog" (the formatted markdown string).`;
+
+            // Call Gemini REST API
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: { response_mime_type: "application/json" }
+              })
+            });
+
+            const data = await response.json();
+            const resultText = data.candidates[0].content.parts[0].text;
+            const parsed = JSON.parse(resultText);
+
+            // Calculate next Semantic Version tag
+            let [major, minor, patch] = LATEST_TAG.replace('v', '').split('.').map(Number);
+            if (parsed.bump === 'major') { major += 1; minor = 0; patch = 0; }
+            else if (parsed.bump === 'minor') { minor += 1; patch = 0; }
+            else { patch += 1; }
+            const nextTag = `v${major}.${minor}.${patch}`;
+
+            // Generate Markdown files
+            const fs = require('fs');
+            const date = new Date().toISOString().split('T')[0];
+            const newChangelogEntry = `## ${nextTag} \u2014 ${date}\n\n${parsed.changelog}\n\n---\n\n`;
+            
+            fs.writeFileSync('NEW_CHANGELOG.md', newChangelogEntry);
+            fs.writeFileSync('RELEASE_NOTES.md', parsed.changelog);
+            
+            // Output the new tag for the next steps
+            core.setOutput('nextTag', nextTag);
+
+      - name: Commit Updated CHANGELOG.md
+        if: steps.gemini.outputs.nextTag != ''
+        run: |
+          NEXT_TAG="${{ steps.gemini.outputs.nextTag }}"
+          
+          # Initialize CHANGELOG.md if it doesn't exist
+          if [ ! -f CHANGELOG.md ]; then
+            echo "# Anugamana Changelog" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+          fi
+          
+          # Prepend the AI generated notes to the top of the file
+          cat NEW_CHANGELOG.md | cat - CHANGELOG.md > temp && mv temp CHANGELOG.md
+          
+          # Set up Git Bot Identity
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Commit the changes using [skip ci] to prevent workflow loops
+          git add CHANGELOG.md
+          git commit -m "chore(release): bump version to ${NEXT_TAG} [skip ci]"
+          git tag ${NEXT_TAG}
+          
+          # Push to the main branch
+          git push origin HEAD --tags
+
+      - name: Publish GitHub Release
+        if: steps.gemini.outputs.nextTag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.gemini.outputs.nextTag }}
+          name: Release ${{ steps.gemini.outputs.nextTag }}
+          body_path: RELEASE_NOTES.md
+          prerelease: true # Set to false if you want stable production releases
