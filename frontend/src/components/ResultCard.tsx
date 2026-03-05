@@ -105,7 +105,7 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
       className="min-h-[calc(100vh-80px)] flex flex-col"
     >
       {/* Header Section */}
-      <div className="bg-gradient-to-r from-orange-100 to-amber-100 px-6 py-4 border-b border-orange-200">
+      <div className="bg-linear-to-r from-orange-100 to-amber-100 px-6 py-4 border-b border-orange-200">
         <div className="container mx-auto max-w-7xl flex items-center justify-between">
           <div>
             <p className="text-xs font-medium text-orange-700 mb-0.5">
@@ -148,9 +148,9 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
 
             {/* Divider */}
             <div className="flex items-center gap-3 mb-6">
-              <div className="flex-1 h-px bg-gradient-to-r from-transparent via-orange-300 to-transparent" />
+              <div className="flex-1 h-px bg-linear-to-r from-transparent via-orange-300 to-transparent" />
               <div className="w-2 h-2 rounded-full bg-orange-400" />
-              <div className="flex-1 h-px bg-gradient-to-r from-transparent via-orange-300 to-transparent" />
+              <div className="flex-1 h-px bg-linear-to-r from-transparent via-orange-300 to-transparent" />
             </div>
 
             {/* Translation */}
@@ -176,7 +176,7 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
                   </button>
                   <button
                     onClick={onSearchAgain}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-orange-600 to-orange-700 text-white rounded-full hover:from-orange-700 hover:to-orange-800 transition-all font-medium shadow-md text-sm"
+                    className="flex items-center gap-2 px-5 py-2.5 bg-linear-to-r from-orange-600 to-orange-700 text-white rounded-full hover:from-orange-700 hover:to-orange-800 transition-all font-medium shadow-md text-sm"
                   >
                     <RotateCcw className="w-4 h-4" />
                     Search Again
@@ -243,9 +243,9 @@ export function ResultCard({ verse, onSearchAgain, userInput }: ResultCardProps)
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3, duration: 0.5 }}
-              className="bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 rounded-2xl shadow-xl border-2 border-indigo-200 p-6 relative overflow-hidden"
+              className="bg-linear-to-br from-blue-50 via-indigo-50 to-purple-50 rounded-2xl shadow-xl border-2 border-indigo-200 p-6 relative overflow-hidden"
             >
-              <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-indigo-200/30 to-purple-200/30 rounded-full blur-2xl -mr-16 -mt-16" />
+              <div className="absolute top-0 right-0 w-32 h-32 bg-linear-to-br from-indigo-200/30 to-purple-200/30 rounded-full blur-2xl -mr-16 -mt-16" />
               
               <div className="relative">
                 <div className="flex items-center gap-2 mb-3">
