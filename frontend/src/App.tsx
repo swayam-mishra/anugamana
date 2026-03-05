@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import Header from './components/Header';
-import HeroSection from './components/HeroSection';
-import ResultCard from './components/ResultCard';
-
+import { Header } from './components/Header';
+import { HeroSection } from './components/HeroSection';
+import { ResultCard } from './components/ResultCard';
 // Define the API call function outside the component
 const fetchVerses = async (searchQuery: string) => {
   // Use your actual backend URL (from Vercel/Render/HF) or localhost for dev
@@ -23,43 +22,35 @@ const fetchVerses = async (searchQuery: string) => {
 
 function App() {
   const [query, setQuery] = useState('');
+  const [selectedChapter, setSelectedChapter] = useState<number | null>(null);
 
   // React Query useMutation handles all the heavy lifting
   const searchMutation = useMutation({
     mutationFn: fetchVerses,
   });
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSeekGuidance = () => {
     if (!query.trim()) return;
-    
-    // Trigger the mutation
     searchMutation.mutate(query);
+  };
+
+  const handleSearchAgain = () => {
+    setQuery('');
+    searchMutation.reset();
   };
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900">
       <Header />
       <main className="container mx-auto px-4 py-8">
-        <HeroSection />
-        
-        {/* Search Form */}
-        <form onSubmit={handleSearch} className="max-w-2xl mx-auto mb-12 flex gap-4">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Ask a question..."
-            className="flex-1 px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-orange-500 focus:border-transparent outline-none"
-          />
-          <button 
-            type="submit" 
-            disabled={searchMutation.isPending}
-            className="bg-orange-600 hover:bg-orange-700 text-white px-8 py-3 rounded-lg font-medium transition-colors disabled:opacity-50"
-          >
-            {searchMutation.isPending ? 'Searching...' : 'Search'}
-          </button>
-        </form>
+        <HeroSection
+          state={searchMutation.isPending ? 'loading' : 'idle'}
+          userInput={query}
+          onInputChange={setQuery}
+          onSeekGuidance={handleSeekGuidance}
+          selectedChapter={selectedChapter}
+          onChapterChange={setSelectedChapter}
+        />
 
         {/* Status Messages */}
         {searchMutation.isError && (
@@ -70,9 +61,35 @@ function App() {
 
         {/* Results */}
         <div className="max-w-4xl mx-auto space-y-6">
-          {searchMutation.data?.results?.map((result: any, index: number) => (
-            <ResultCard key={index} data={result} />
-          ))}
+          {searchMutation.data?.results?.map((result: any, index: number) => {
+            const rawEmotions = result.metadata?.emotions || "";
+            const emotionTags = rawEmotions.split(',').map((s: string) => s.trim()).filter(Boolean);
+            const aiAdvice = result.metadata?.ai_advice;
+            const interpretation = aiAdvice
+              ? aiAdvice
+              : (emotionTags.length > 0
+                  ? `This verse specifically addresses feelings of ${emotionTags[0]} and offers spiritual guidance on how to navigate them.`
+                  : 'This verse resonates with your current state of mind. Reflect on its meaning to find clarity.');
+
+            return (
+              <ResultCard
+                key={index}
+                verse={{
+                  chapter: result.metadata?.chapter,
+                  verse: result.metadata?.verse,
+                  sanskrit: result.metadata?.sanskrit,
+                  transliteration: result.metadata?.transliteration || '',
+                  synonyms: result.metadata?.synonyms || '',
+                  translation: result.metadata?.translation || result.text,
+                  purport: result.metadata?.purport || '',
+                  interpretation,
+                  keywords: emotionTags,
+                }}
+                onSearchAgain={handleSearchAgain}
+                userInput={query}
+              />
+            );
+          })}
         </div>
       </main>
     </div>
