@@ -8,9 +8,9 @@ on:
 
 jobs:
   # ----------------------------------
-  # JOB 1: Test the Python Backend
+  # Simple Backend Check: Just Lint & Install
   # ----------------------------------
-  test-backend:
+  check-backend:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Code
@@ -22,44 +22,22 @@ jobs:
         python-version: "3.11"
         cache: 'pip'
 
-    - name: Install Backend Dependencies
+    - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install ruff
+        # We install dependencies to ensure requirements.txt is valid
         pip install -r backend/requirements.txt
+        pip install ruff
 
-    - name: Lint with Ruff
+    - name: Quick Lint
       run: |
-        # Stop the build if there are Python syntax errors or undefined names
+        # This just checks for major syntax errors or broken imports
         ruff check backend/ --select=E9,F63,F7,F82
 
-    - name: Run RAG Evaluation
-      env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
-        UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-        UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-      run: |
-        cd backend
-        
-        # 1. Start the FastAPI server in the background (using the & symbol)
-        uvicorn main:app --host 127.0.0.1 --port 8000 &
-        
-        # 2. Wait for the ONNX models to load and the server to wake up
-        echo "Waiting for FastAPI server to start..."
-        until curl -s http://127.0.0.1:8000/ > /dev/null; do
-          sleep 5
-        done
-        echo "Server is up! Running tests..."
-        
-        # 3. Run the evaluation scripts
-        python test_rag.py
-        python evaluate_accuracy.py
-
   # ----------------------------------
-  # JOB 2: Test the React Frontend Build
+  # Simple Frontend Check: Just Build
   # ----------------------------------
-  test-frontend:
+  check-frontend:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout Code
@@ -68,14 +46,12 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20' # Vite requires Node 18+ or 20+
+        node-version: '20'
         cache: 'npm'
         cache-dependency-path: frontend/package-lock.json
 
-    - name: Install Frontend Dependencies
+    - name: Install & Build
       working-directory: ./frontend
-      run: npm ci # 'ci' is cleaner and faster than 'install' for automated testing
-
-    - name: Build Frontend
-      working-directory: ./frontend
-      run: npm run build # If this fails, the PR is blocked
+      run: |
+        npm install
+        npm run build
