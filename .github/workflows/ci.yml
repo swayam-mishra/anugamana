@@ -41,6 +41,18 @@ jobs:
         UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
       run: |
         cd backend
+        
+        # 1. Start the FastAPI server in the background (using the & symbol)
+        uvicorn main:app --host 127.0.0.1 --port 8000 &
+        
+        # 2. Wait for the ONNX models to load and the server to wake up
+        echo "Waiting for FastAPI server to start..."
+        until curl -s http://127.0.0.1:8000/ > /dev/null; do
+          sleep 5
+        done
+        echo "Server is up! Running tests..."
+        
+        # 3. Run the evaluation scripts
         python test_rag.py
         python evaluate_accuracy.py
 
